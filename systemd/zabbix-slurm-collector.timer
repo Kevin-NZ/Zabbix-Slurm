@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the Slurm metrics cache every minute
+Documentation=https://github.com/Kevin-NZ/Zabbix-Slurm
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=5s
+# Keep the cache warm even if a run was missed while the machine was down.
+Persistent=false
+Unit=zabbix-slurm-collector.service
+
+[Install]
+WantedBy=timers.target

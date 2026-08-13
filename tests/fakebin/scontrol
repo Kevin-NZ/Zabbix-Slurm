@@ -1,0 +1,11 @@
+#!/bin/sh
+# Fake scontrol used by the collector test-suite.
+FIX="$(dirname "$0")/../fixtures"
+case "$1 $2" in
+  "ping ")            cat "$FIX/scontrol_ping.txt" ;;
+  "show config")      cat "$FIX/scontrol_show_config.txt" ;;
+  "show node")        cat "$FIX/scontrol_show_node.txt" ;;
+  "show partition")   cat "$FIX/scontrol_show_partition.txt" ;;
+  "show reservation") cat "$FIX/scontrol_show_reservation.txt" ;;
+  *) echo "fake scontrol: unsupported arguments: $*" >&2; exit 1 ;;
+esac

@@ -1,0 +1,53 @@
+*******************************************************
+sdiag output at Sun May 05 12:00:01 2024 (1714910401)
+Data since      Sun May 05 00:00:00 2024 (1714867200)
+*******************************************************
+Server thread count:  8
+Agent queue size:     12
+Agent count:          3
+Agent thread count:   9
+DBD Agent queue size: 4
+
+Jobs submitted: 15234
+Jobs started:   14980
+Jobs completed: 14855
+Jobs canceled:  221
+Jobs failed:    33
+
+Job states ts:  Sun May 05 12:00:00 2024 (1714910400)
+Jobs pending:   380
+Jobs running:   102
+
+Main schedule statistics (microseconds):
+	Last cycle:   152340
+	Max cycle:    4823901
+	Total cycles: 8123
+	Mean cycle:   285412
+	Mean depth cycle: 42
+	Cycles per minute: 11
+	Last queue length: 380
+
+Backfilling stats
+	Total backfilled jobs (since last slurm start): 8823
+	Total backfilled jobs (since last stats cycle start): 412
+	Total backfilled heterogeneous job components: 0
+	Total cycles: 1204
+	Last cycle when: Sun May 05 11:59:12 2024 (1714910352)
+	Last cycle: 2841233
+	Max cycle: 29123400
+	Mean cycle: 1923114
+	Last depth cycle: 380
+	Last depth cycle (try sched): 210
+	Depth Mean: 341
+	Depth Mean (try depth): 190
+	Last queue length: 380
+	Queue length mean: 355
+	Last table size: 42
+	Mean table size: 38
+
+Latency for 1000 calls to gettimeofday(): 18 microseconds
+
+Remote Procedure Call statistics by message type
+	REQUEST_PARTITION_INFO                  ( 2009) count:12043 ave_time:412   total_time:4961716
+	REQUEST_JOB_INFO                        ( 2003) count:8021  ave_time:1523  total_time:12215983
+	Last cycle:   99999

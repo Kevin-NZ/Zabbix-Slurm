@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake sacctmgr: "show cluster" is the slurmdbd reachability probe.
+for arg in "$@"; do
+  case "$arg" in
+    cluster) echo "hpc-prod"; exit 0 ;;
+    qos)     cat "$(dirname "$0")/../fixtures/sacctmgr_qos.txt"; exit 0 ;;
+  esac
+done
+echo "fake sacctmgr: unsupported arguments: $*" >&2
+exit 1

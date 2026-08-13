@@ -1,0 +1,15 @@
+Configuration data as of 2024-05-05T12:00:01
+AccountingStorageBackupHost = (null)
+AccountingStorageHost   = dbd01
+AccountingStorageType   = accounting_storage/slurmdbd
+ClusterName             = hpc-prod
+ControlMachine          = head01
+MaxJobCount             = 50000
+MaxArraySize            = 10001
+SchedulerType           = sched/backfill
+SelectType              = select/cons_tres
+SlurmctldHost[0]        = head01
+SlurmctldHost[1]        = head02
+SlurmctldPort           = 6817
+SlurmUser               = slurm(202)
+SLURM_VERSION           = 23.02.7

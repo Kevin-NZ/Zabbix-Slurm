@@ -1,0 +1,3 @@
+normal|0|||
+high|1000|cpu=512,mem=2T||50
+gpu|500|cpu=256,gres/gpu=8||20
