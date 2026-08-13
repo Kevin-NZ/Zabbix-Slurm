@@ -48,20 +48,43 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # --- locate the agent include directory ------------------------------------
+# Zabbix agent 2 ships "Include=/etc/zabbix/zabbix_agent2.d/plugins.d/*.conf",
+# so a UserParameter file dropped straight into zabbix_agent2.d is never read.
 if [ -z "$AGENT_DIR" ]; then
-    for candidate in /etc/zabbix/zabbix_agent2.d /etc/zabbix/zabbix_agentd.d \
-                     /etc/zabbix/zabbix_agentd.conf.d /usr/local/etc/zabbix_agentd.conf.d; do
-        if [ -d "$candidate" ]; then
-            AGENT_DIR=$candidate
-            break
-        fi
-    done
+    if [ -d /etc/zabbix/zabbix_agent2.d ]; then
+        AGENT_DIR=/etc/zabbix/zabbix_agent2.d/plugins.d
+    else
+        for candidate in /etc/zabbix/zabbix_agentd.d /etc/zabbix/zabbix_agentd.conf.d \
+                         /usr/local/etc/zabbix_agentd.conf.d; do
+            if [ -d "$candidate" ]; then
+                AGENT_DIR=$candidate
+                break
+            fi
+        done
+    fi
 fi
 
 if [ -z "$AGENT_DIR" ]; then
     echo "Could not find a Zabbix agent include directory; pass --agent-dir." >&2
     exit 1
 fi
+
+if [ ! -d "$AGENT_DIR" ]; then
+    echo "Creating $AGENT_DIR"
+    mkdir -p "$AGENT_DIR"
+fi
+
+# Warn when the agent does not actually include the directory we are about to
+# write to: the UserParameters would load silently nowhere and every item would
+# come back as "Unsupported item key".
+for agent_conf in /etc/zabbix/zabbix_agent2.conf /etc/zabbix/zabbix_agentd.conf \
+                  /usr/local/etc/zabbix_agentd.conf; do
+    [ -f "$agent_conf" ] || continue
+    if ! grep -qs "^[[:space:]]*Include=.*$AGENT_DIR" "$agent_conf"; then
+        echo "WARNING: $agent_conf has no Include covering $AGENT_DIR." >&2
+        echo "         Add:  Include=$AGENT_DIR/*.conf" >&2
+    fi
+done
 
 # --- sanity checks ----------------------------------------------------------
 missing=""

@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+* `install.sh` now writes the UserParameters to
+  `/etc/zabbix/zabbix_agent2.d/plugins.d/slurm.conf` on hosts running Zabbix
+  agent 2. The packaged agent 2 includes `plugins.d/*.conf` only, so the
+  previous target (`zabbix_agent2.d/slurm.conf`) was never read and every item
+  came back as "Unsupported item key". The installer creates the directory when
+  missing and warns when the agent configuration has no `Include` covering it.
+
 ## [1.0.0] - 2026-08-13
 
 First release.

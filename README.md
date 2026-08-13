@@ -55,6 +55,18 @@ The installer copies the collector to `/usr/local/bin/slurm_zabbix.py`, creates
 the cache directory `/var/lib/zabbix-slurm/`, writes the UserParameters into the
 agent include directory, and verifies that collection works as the `zabbix` user.
 
+The include directory differs between the two agents:
+
+| Agent | UserParameter file |
+| --- | --- |
+| Zabbix agent 2 | `/etc/zabbix/zabbix_agent2.d/plugins.d/slurm.conf` |
+| Zabbix agent | `/etc/zabbix/zabbix_agentd.d/slurm.conf` |
+
+Agent 2 includes `zabbix_agent2.d/plugins.d/*.conf`, **not**
+`zabbix_agent2.d/*.conf`, so a file dropped one directory too high is never
+read. The installer picks the right path and warns if your agent configuration
+has no `Include` covering it; with `--agent-dir` you can override it.
+
 Without `--timer` the agent runs the collector itself, so the agent timeout has
 to be raised in `zabbix_agentd.conf` / `zabbix_agent2.conf`:
 
@@ -278,8 +290,16 @@ Also worth knowing:
 ## Troubleshooting
 
 **`zabbix_get -k slurm.cluster` returns "Unsupported item key"**
-The agent has not loaded the UserParameters. Check that `Include` in the agent
-configuration covers the directory holding `slurm.conf`, and restart the agent.
+The agent has not loaded the UserParameters. On agent 2 this is almost always
+the wrong directory: the file has to be in
+`/etc/zabbix/zabbix_agent2.d/plugins.d/`, since the packaged configuration
+includes `plugins.d/*.conf` only. Confirm which directories are actually read,
+
+```sh
+grep -n '^Include' /etc/zabbix/zabbix_agent2.conf   # or zabbix_agentd.conf
+```
+
+move `slurm.conf` there, and restart the agent.
 
 **Timeouts, or `ZBX_NOTSUPPORTED: Timeout while executing a shell script`**
 Raise `Timeout=30` in the agent configuration, or switch to the timer mode.
