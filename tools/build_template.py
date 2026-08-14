@@ -24,6 +24,11 @@ EXPORT_VERSION = "7.0"
 TEMPLATE = "Slurm cluster by Zabbix agent"
 TEMPLATE_NAME = "Slurm cluster by Zabbix agent"
 TEMPLATE_GROUP = "Templates/Applications"
+# "Templates/Applications" is a standard Zabbix group that already exists in
+# every installation.  Reusing the UUID Zabbix ships for it makes the import
+# map onto that group instead of looking like a different object with the same
+# name; every official 7.0 template uses this value.
+TEMPLATE_GROUP_UUID = "a571c0d144b14fd4a87a9d9b2aa9fcd6"
 
 # Fixed namespace, chosen once.  Never change it: every UUID in the export is
 # derived from it, and changing it would make Zabbix treat the import as a set
@@ -67,7 +72,21 @@ GREY = "8B8B8B"
 
 
 def make_uuid(*parts):
-    return uuidlib.uuid5(UUID_NAMESPACE, "/".join(parts)).hex
+    """Derive a stable UUID from an object's path.
+
+    Zabbix rejects an import unless every uuid is a version 4 UUID ("UUIDv4 is
+    expected"), but random UUIDs would change on every build and make Zabbix
+    treat a re-import as a set of new objects.  The value is therefore derived
+    from a SHA-1 hash as usual, and only the six bits that carry the version
+    and the variant are overwritten to make it well formed.  That leaves 122
+    bits of hash, so distinct paths still get distinct UUIDs.
+    """
+    number = uuidlib.uuid5(UUID_NAMESPACE, "/".join(parts)).int
+    number &= ~(0xF << 76)   # clear the version nibble
+    number |= 0x4 << 76      # version 4
+    number &= ~(0x3 << 62)   # clear the variant bits
+    number |= 0x2 << 62      # RFC 4122 variant (10xx)
+    return uuidlib.UUID(int=number).hex
 
 
 # ---------------------------------------------------------------------------
@@ -736,10 +755,20 @@ DISCOVERY_RULES = [
 
 
 def expr(key, function="last", args="", value=""):
+    """A history function applied to an item: min(/template/key,15m)>5."""
     reference = "/%s/%s" % (TEMPLATE, key)
     if args:
         reference = "%s,%s" % (reference, args)
     return "%s(%s)%s" % (function, reference, value)
+
+
+def length_of(key):
+    """length() is a string function: it takes a value, not an item reference.
+
+    "length(/template/key)" does not parse, so the value has to come from a
+    history function first, exactly as the official templates do it.
+    """
+    return "length(%s)" % expr(key, "last")
 
 
 CTLD_DOWN = "slurmctld-down"
@@ -985,8 +1014,11 @@ TRIGGERS = [
         "id": "version-changed",
         "name": "Slurm: Version has changed",
         # change() is numeric only, so string values are compared explicitly.
-        "expression": "%s<>%s" % (expr("slurm.cluster.version", "last"),
-                                  expr("slurm.cluster.version", "last", "#2")),
+        # The length() guard keeps the trigger from firing on the first value
+        # ever collected, when there is no previous value to compare against.
+        "expression": "%s<>%s and %s>0" % (expr("slurm.cluster.version", "last", "#1"),
+                                           expr("slurm.cluster.version", "last", "#2"),
+                                           length_of("slurm.cluster.version")),
         "priority": "INFO",
         "scope": "notice",
         "manual_close": True,
@@ -1103,7 +1135,7 @@ NODE_TRIGGERS = [
         # it through {ITEM.LASTVALUE2}; length()>=0 is always true and does not
         # change when the trigger fires.
         "expression": (expr("slurm.node.state.code[{#NODE}]", "last", "", "=5") + " and " +
-                       expr("slurm.node.reason[{#NODE}]", "length", "", ">=0")),
+                       length_of("slurm.node.reason[{#NODE}]") + ">=0"),
         "priority": "WARNING",
         "scope": "availability",
         "opdata": "Reason: {ITEM.LASTVALUE2}",
@@ -1114,7 +1146,7 @@ NODE_TRIGGERS = [
         "id": "node-draining",
         "name": "Node [{#NODE}]: Draining",
         "expression": (expr("slurm.node.state.code[{#NODE}]", "last", "", "=6") + " and " +
-                       expr("slurm.node.reason[{#NODE}]", "length", "", ">=0")),
+                       length_of("slurm.node.reason[{#NODE}]") + ">=0"),
         "priority": "INFO",
         "scope": "availability",
         "opdata": "Reason: {ITEM.LASTVALUE2}",
@@ -1280,24 +1312,46 @@ GRAPH_PROTOTYPES = [
 # Dashboards
 # ---------------------------------------------------------------------------
 
-# Zabbix 7.0 dashboards use a 72 column grid.
+# Zabbix 7.0 dashboards use a 72 column grid, and widget fields that point at an
+# object are indexed ("itemid.0", "graphid.0") because a widget may take several
+# data sources.  Widgets that can broadcast to other widgets additionally carry a
+# "reference" that has to be unique within the dashboard; the reference is filled
+# in while rendering, see render_dashboards().
+
+# Item value widget "Show" options.
+SHOW_DESCRIPTION = "1"
+SHOW_VALUE = "2"
+
+
 def value_widget(name, key, x, y, width=12, height=3):
     return {"type": "item", "name": name, "x": x, "y": y, "width": width, "height": height,
-            "fields": [("ITEM", "itemid", key)]}
+            "fields": [("ITEM", "itemid.0", key),
+                       ("INTEGER", "show.0", SHOW_DESCRIPTION),
+                       ("INTEGER", "show.1", SHOW_VALUE)]}
 
 
 def graph_widget(name, graph, x, y, width=36, height=6):
     return {"type": "graph", "name": name, "x": x, "y": y, "width": width, "height": height,
-            "fields": [("INTEGER", "source_type", "0"), ("GRAPH", "graphid", graph)]}
+            "reference": True,
+            "fields": [("GRAPH", "graphid.0", graph)]}
 
 
 def graph_prototype_widget(name, graph, x, y, width=36, height=12, columns=1, rows=2):
     return {"type": "graphprototype", "name": name, "x": x, "y": y,
             "width": width, "height": height,
-            "fields": [("INTEGER", "source_type", "0"),
-                       ("GRAPH_PROTOTYPE", "graphid", graph),
+            "reference": True,
+            "fields": [("GRAPH_PROTOTYPE", "graphid.0", graph),
                        ("INTEGER", "columns", str(columns)),
                        ("INTEGER", "rows", str(rows))]}
+
+
+def reference_code(index):
+    """Widget references are five letter codes: AAAAA, AAAAB, AAAAC..."""
+    code = ""
+    for _ in range(5):
+        code = chr(ord("A") + index % 26) + code
+        index //= 26
+    return code
 
 
 DASHBOARDS = [
@@ -1427,7 +1481,8 @@ def render_master_item(parent, definition):
     element = sub(parent, "item")
     sub(element, "uuid", make_uuid("item", definition["key"]))
     sub(element, "name", definition["name"])
-    sub(element, "type", "ZABBIX_PASSIVE")
+    # No <type>: Zabbix agent is the default, and that is how the official
+    # templates spell it.
     sub(element, "key", definition["key"])
     sub(element, "delay", definition["delay"])
     sub(element, "history", "0")
@@ -1481,7 +1536,7 @@ def build():
 
     groups = sub(root, "template_groups")
     group = sub(groups, "template_group")
-    sub(group, "uuid", make_uuid("template_group", TEMPLATE_GROUP))
+    sub(group, "uuid", TEMPLATE_GROUP_UUID)
     sub(group, "name", TEMPLATE_GROUP)
 
     templates = sub(root, "templates")
@@ -1587,6 +1642,7 @@ def build():
         sub(dashboard, "uuid", make_uuid("dashboard", dashboard_name))
         sub(dashboard, "name", dashboard_name)
         pages_element = sub(dashboard, "pages")
+        references = 0
         for page_name, widgets in pages:
             page = sub(pages_element, "page")
             sub(page, "name", page_name)
@@ -1599,8 +1655,12 @@ def build():
                 sub(widget_element, "y", widget["y"])
                 sub(widget_element, "width", widget["width"])
                 sub(widget_element, "height", widget["height"])
+                widget_fields = list(widget["fields"])
+                if widget.get("reference"):
+                    widget_fields.append(("STRING", "reference", reference_code(references)))
+                    references += 1
                 fields = sub(widget_element, "fields")
-                for field_type, field_name, field_value in widget["fields"]:
+                for field_type, field_name, field_value in widget_fields:
                     field = sub(fields, "field")
                     sub(field, "type", field_type)
                     sub(field, "name", field_name)

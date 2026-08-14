@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -91,6 +92,76 @@ class ShippedTemplateTest(TemplateTestCase):
                 self.assertEqual(first_handle.read(), second_handle.read())
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+
+    def test_every_uuid_is_a_version_4_uuid(self):
+        """Zabbix refuses the whole import with 'UUIDv4 is expected' otherwise."""
+        tree = ET.parse(TEMPLATE)
+        values = [element.text for element in tree.iter("uuid")]
+        self.assertGreater(len(values), 200)
+        self.assertEqual(len(values), len(set(values)), "uuids must be unique")
+        for value in values:
+            self.assertRegex(value, r"^[0-9a-f]{32}$")
+            parsed = uuid.UUID(value)
+            self.assertEqual(parsed.version, 4, "%s is a v%s uuid" % (value, parsed.version))
+            self.assertEqual((parsed.int >> 62) & 0x3, 0x2,
+                             "%s has the wrong variant bits" % value)
+
+    def test_widget_fields_follow_the_zabbix_7_contract(self):
+        """Zabbix 7.0 indexes object fields and wants a reference on graphs.
+
+        Getting this wrong does not fail the import, it just renders empty
+        widgets, so it is checked against the shipped file directly.
+        """
+        tree = ET.parse(TEMPLATE)
+        seen_references = set()
+        widgets = tree.findall(".//widgets/widget")
+        self.assertGreater(len(widgets), 20)
+        for widget in widgets:
+            kind = widget.find("type").text
+            name = widget.find("name").text
+            fields = dict((field.find("name").text, field.find("type").text)
+                          for field in widget.findall("./fields/field"))
+
+            for legacy in ("itemid", "graphid"):
+                self.assertNotIn(legacy, fields,
+                                 "%s: %r must be indexed as %r" % (name, legacy, legacy + ".0"))
+            if kind == "item":
+                self.assertEqual(fields.get("itemid.0"), "ITEM", name)
+                self.assertNotIn("reference", fields, name)
+            elif kind == "graph":
+                self.assertEqual(fields.get("graphid.0"), "GRAPH", name)
+                self.assertIn("reference", fields, name)
+            elif kind == "graphprototype":
+                self.assertEqual(fields.get("graphid.0"), "GRAPH_PROTOTYPE", name)
+                self.assertIn("columns", fields, name)
+                self.assertIn("reference", fields, name)
+            else:
+                self.fail("unexpected widget type %r" % kind)
+
+            for field in widget.findall("./fields/field"):
+                if field.find("name").text == "reference":
+                    value = field.find("value").text
+                    self.assertRegex(value, r"^[A-Z]{5}$")
+                    self.assertNotIn(value, seen_references, "duplicate reference " + value)
+                    seen_references.add(value)
+
+    def test_string_functions_never_take_an_item_reference(self):
+        """length(/host/key) does not parse; it has to be length(last(/host/key))."""
+        tree = ET.parse(TEMPLATE)
+        expressions = [element.text for element in tree.iter("expression")]
+        self.assertGreater(len(expressions), 30)
+        for expression in expressions:
+            for function in vt.VALUE_ONLY_FUNCTIONS:
+                self.assertNotRegex(expression, r"\b%s\(\s*/" % function)
+        self.assertTrue(any("length(last(/" in expression for expression in expressions),
+                        "expected at least one length(last(...)) expression")
+
+    def test_uses_the_standard_template_group_uuid(self):
+        """Templates/Applications already exists in every Zabbix installation."""
+        tree = ET.parse(TEMPLATE)
+        group = tree.find("./template_groups/template_group")
+        self.assertEqual(group.find("name").text, "Templates/Applications")
+        self.assertEqual(group.find("uuid").text, "a571c0d144b14fd4a87a9d9b2aa9fcd6")
 
     def test_expected_content(self):
         validator = vt.Validator(TEMPLATE, self.document)
@@ -213,6 +284,63 @@ class ValidatorDetectsFaultsTest(TemplateTestCase):
                                  element.find("value/key").text == "slurm.nodes.available"))
             field.find("value/key").text = "slurm.nodes.availabl"
         self.assert_detects(mutation, "unknown item")
+
+    def test_detects_a_string_function_on_an_item_reference(self):
+        def mutation(tree):
+            trigger = self.find(
+                tree, "./triggers/trigger",
+                lambda element: element.find("name").text == "Slurm: Version has changed")
+            trigger.find("expression").text = (
+                "length(/Slurm cluster by Zabbix agent/slurm.cluster.version)>0")
+        self.assert_detects(mutation, "takes a value, not an item reference")
+
+    def test_detects_an_unindexed_widget_field(self):
+        def mutation(tree):
+            field = self.find(
+                tree, ".//widgets/widget/fields/field",
+                lambda element: (element.find("type").text == "ITEM" and
+                                 element.find("value/key").text == "slurm.nodes.available"))
+            field.find("name").text = "itemid"
+        self.assert_detects(mutation, "unindexed field name")
+
+    def test_detects_a_graph_widget_without_a_reference(self):
+        def mutation(tree):
+            widget = self.find(tree, ".//widgets/widget",
+                               lambda element: element.find("name").text == "Nodes by state")
+            fields = widget.find("fields")
+            for field in list(fields):
+                if field.find("name").text == "reference":
+                    fields.remove(field)
+        self.assert_detects(mutation, "no reference field")
+
+    def test_detects_duplicate_widget_references(self):
+        def mutation(tree):
+            fields = [field for field in tree.findall(".//widgets/widget/fields/field")
+                      if field.find("name").text == "reference"]
+            fields[1].find("value").text = fields[0].find("value").text
+        self.assert_detects(mutation, "share the reference")
+
+    def test_detects_a_missing_widget_object_field(self):
+        def mutation(tree):
+            widget = self.find(tree, ".//widgets/widget",
+                               lambda element: element.find("name").text == "Nodes available")
+            fields = widget.find("fields")
+            for field in list(fields):
+                if field.find("name").text == "itemid.0":
+                    fields.remove(field)
+        self.assert_detects(mutation, "missing the ITEM field")
+
+    def test_detects_a_non_v4_uuid(self):
+        def mutation(tree):
+            element = tree.find(".//items/item/uuid")
+            # A uuid5 value: right shape, wrong version.
+            element.text = uuid.uuid5(uuid.NAMESPACE_DNS, "example").hex
+        self.assert_detects(mutation, "UUIDv4 is expected")
+
+    def test_detects_a_malformed_uuid(self):
+        def mutation(tree):
+            tree.find(".//items/item/uuid").text = "not-a-uuid"
+        self.assert_detects(mutation, "invalid uuid")
 
     def test_detects_duplicate_uuids(self):
         def mutation(tree):

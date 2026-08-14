@@ -7,6 +7,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+* **The template could not be imported.** Zabbix accepts version 4 UUIDs only
+  and rejected the export with "UUIDv4 is expected", because the UUIDs were
+  derived with `uuid5`. They are still derived from each object's path, so they
+  stay stable across builds, but the version and variant bits are now set to
+  make them well formed v4 values. Every UUID in the template changed as a
+  result; since no earlier version could be imported, there is nothing to
+  migrate.
+* **Trigger expressions using `length()` would have failed validation.**
+  `length()` is a string function and takes a value, so it has to be written
+  `length(last(/host/key))` rather than `length(/host/key)`. Affects the two
+  node drain triggers and the Slurm version trigger.
+* **Dashboard widgets referenced their objects with the pre-7.0 field names.**
+  Zabbix 7.0 indexes them (`itemid.0`, `graphid.0`) and expects a `reference`
+  on graph and graph prototype widgets; the previous spelling imported without
+  complaint and rendered empty widgets. Item value widgets now also set the
+  `show` options explicitly.
+* The template group now carries the UUID Zabbix ships for
+  `Templates/Applications`, so the import maps onto the existing group.
+* Plain agent items no longer spell out `<type>ZABBIX_PASSIVE</type>`, matching
+  the official templates, which rely on it being the default.
+
+All of the above are now covered by `tools/validate_template.py` and the test
+suite, checked against the widget and expression conventions used by the
+official Zabbix 7.0 templates.
+
 * `install.sh` now writes the UserParameters to
   `/etc/zabbix/zabbix_agent2.d/plugins.d/slurm.conf` on hosts running Zabbix
   agent 2. The packaged agent 2 includes `plugins.d/*.conf` only, so the

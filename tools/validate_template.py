@@ -36,7 +36,10 @@ FAKEBIN = os.path.join(ROOT, "tests", "fakebin")
 DASHBOARD_COLUMNS = 72
 DASHBOARD_ROWS = 64
 
-UUID_RE = re.compile(r"^[0-9a-f]{32}$")
+# Zabbix accepts version 4 UUIDs only, and rejects the whole import with
+# "UUIDv4 is expected" otherwise: 32 lowercase hex digits, '4' in the version
+# position and 8, 9, a or b in the variant position.
+UUID_RE = re.compile(r"^[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]+(\[.*\])?$")
 # An item reference only ever appears as the first argument of a trigger
 # function, i.e. "func(/host/key...)".  Anchoring on the function call keeps
@@ -46,6 +49,28 @@ USER_MACRO_RE = re.compile(r"\{\$([A-Z0-9._]+)(?::[^}]*)?\}")
 LLD_MACRO_RE = re.compile(r"\{#[A-Z0-9_]+\}")
 
 VALID_PRIORITIES = ("NOT_CLASSIFIED", "INFO", "WARNING", "AVERAGE", "HIGH", "DISASTER")
+
+# Field contract per widget type, taken from the official Zabbix 7.0 templates.
+# Object references are indexed ("itemid.0"), and widgets that can broadcast to
+# other widgets carry a "reference" that is unique within the dashboard.  Getting
+# any of this wrong imports without complaint and renders an empty widget.
+WIDGET_CONTRACTS = {
+    "item": {"required": (("ITEM", "itemid.0"),), "reference": False},
+    "graph": {"required": (("GRAPH", "graphid.0"),), "reference": True},
+    "graphprototype": {"required": (("GRAPH_PROTOTYPE", "graphid.0"),
+                                    ("INTEGER", "columns")), "reference": True},
+}
+
+# Unindexed spellings that used to work in older Zabbix releases.
+LEGACY_FIELD_NAMES = ("itemid", "graphid", "itemid_prototype", "graphid_prototype")
+
+# String functions operate on a value, not on an item reference: the value has
+# to be produced by a history function first, as in length(last(/host/key)).
+# Writing length(/host/key) fails Zabbix's expression validation on import.
+VALUE_ONLY_FUNCTIONS = (
+    "length", "left", "right", "mid", "trim", "ltrim", "rtrim", "concat",
+    "insert", "replace", "repeat", "ascii", "bytelength", "bitlength",
+)
 VALID_VALUE_TYPES = ("FLOAT", "CHAR", "LOG", "UNSIGNED", "TEXT")
 
 # JSONPath subset used by the template: object navigation, one equality filter
@@ -137,7 +162,10 @@ class Validator(object):
     def check_uuid(self, element, label):
         uuid = text_of(element, "uuid")
         if not UUID_RE.match(uuid):
-            self.error("%s: invalid uuid %r" % (label, uuid))
+            reason = "not a version 4 UUID" if re.match(r"^[0-9a-f]{32}$", uuid) \
+                else "not 32 lowercase hex digits"
+            self.error("%s: invalid uuid %r (%s); Zabbix rejects the import with "
+                       "'UUIDv4 is expected'" % (label, uuid, reason))
         elif uuid in self.uuids:
             self.error("%s: uuid collides with %s" % (label, self.uuids[uuid]))
         else:
@@ -343,6 +371,12 @@ class Validator(object):
             if priority not in VALID_PRIORITIES:
                 self.error("%s: invalid priority %r" % (label, priority))
 
+            for function in VALUE_ONLY_FUNCTIONS:
+                if re.search(r"\b%s\(\s*/" % function, expression):
+                    self.error("%s: %s() takes a value, not an item reference; write "
+                               "%s(last(/host/key)) instead"
+                               % (label, function, function))
+
             references = ITEM_REFERENCE_RE.findall(expression)
             if not references:
                 self.error("%s: expression references no item: %s" % (label, expression))
@@ -393,6 +427,7 @@ class Validator(object):
     def check_dashboards(self):
         for dashboard in self.root.findall("./templates/template/dashboards/dashboard"):
             dashboard_name = text_of(dashboard, "name")
+            self._check_widget_references(dashboard, dashboard_name)
             for page in dashboard.findall("./pages/page"):
                 page_name = text_of(page, "name")
                 label = "dashboard %s / %s" % (dashboard_name, page_name)
@@ -422,7 +457,48 @@ class Validator(object):
 
                     self._check_widget_fields(label, widget_name, widget)
 
+    def _check_widget_references(self, dashboard, dashboard_name):
+        """Widget references have to be unique within their dashboard."""
+        seen = {}
+        for widget in dashboard.findall("./pages/page/widgets/widget"):
+            for field in widget.findall("./fields/field"):
+                if text_of(field, "name") != "reference":
+                    continue
+                value = text_of(field, "value")
+                name = text_of(widget, "name")
+                if not re.match(r"^[A-Z]{5}$", value):
+                    self.error("dashboard %s: widget %s has an invalid reference %r"
+                               % (dashboard_name, name, value))
+                if value in seen:
+                    self.error("dashboard %s: widgets %s and %s share the reference %r"
+                               % (dashboard_name, seen[value], name, value))
+                seen[value] = name
+
+    def _check_widget_contract(self, label, widget_name, widget):
+        """Check the widget carries the fields Zabbix 7.0 expects for its type."""
+        contract = WIDGET_CONTRACTS.get(text_of(widget, "type"))
+        if contract is None:
+            return
+        present = set((text_of(field, "type"), text_of(field, "name"))
+                      for field in widget.findall("./fields/field"))
+        names = set(name for _, name in present)
+
+        for required in contract["required"]:
+            if required not in present:
+                self.error("%s: widget %s is missing the %s field %r"
+                           % (label, widget_name, required[0], required[1]))
+        if contract["reference"] and "reference" not in names:
+            self.error("%s: widget %s has no reference field" % (label, widget_name))
+        if not contract["reference"] and "reference" in names:
+            self.error("%s: widget %s must not have a reference field"
+                       % (label, widget_name))
+        for legacy in LEGACY_FIELD_NAMES:
+            if legacy in names:
+                self.error("%s: widget %s uses the unindexed field name %r; Zabbix 7.0 "
+                           "expects %r" % (label, widget_name, legacy, legacy + ".0"))
+
     def _check_widget_fields(self, label, widget_name, widget):
+        self._check_widget_contract(label, widget_name, widget)
         for field in widget.findall("./fields/field"):
             field_type = text_of(field, "type")
             if field_type == "ITEM":

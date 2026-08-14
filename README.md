@@ -338,11 +338,27 @@ produces a byte-identical file and Zabbix keeps recognising already imported
 objects.
 
 `tools/validate_template.py` is the reason the XML can be trusted without a live
-Zabbix: it checks UUID uniqueness, master item references, trigger expressions
-and dependencies, graph and dashboard references, macro definitions, widget
-geometry — and it resolves **every JSONPath in the template against real
-collector output**, so a path that could never match is an error rather than a
-silently empty item.
+Zabbix. It checks:
+
+* UUIDs are unique and **version 4** — Zabbix refuses the whole import with
+  "UUIDv4 is expected" otherwise;
+* dependent items point at an existing master item, and no item mixes a master
+  item with a polling interval;
+* trigger expressions reference existing items on this template, their
+  dependencies exist, and string functions such as `length()` are applied to a
+  value (`length(last(/host/key))`) rather than to an item reference, which
+  fails Zabbix's expression validation;
+* dashboard widgets carry the fields Zabbix 7.0 expects — indexed object
+  references (`itemid.0`, `graphid.0`) and a `reference` unique within the
+  dashboard — since the pre-7.0 spelling imports cleanly and renders an empty
+  widget;
+* graphs, widgets and value maps reference objects that exist, every `{$MACRO}`
+  has a default, and widgets stay inside the 72x64 grid without overlapping;
+* **every JSONPath resolves against real collector output**, so a path that
+  could never match is an error rather than a silently empty item.
+
+The widget and expression conventions were taken from the official Zabbix 7.0
+templates rather than from the documentation alone.
 
 The collector is tested against recorded Slurm command output in
 `tests/fixtures/`, replayed by the stub commands in `tests/fakebin/`. To add
