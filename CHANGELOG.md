@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+* `{$SLURM.NODE.MEMORY.FREE.MIN}` now defaults to `0`, which disables the
+  *Node free memory is below N%* trigger. Slurm's `FreeMem` does not count
+  reclaimable page cache as free, so the value falls towards zero on any node
+  that has been running jobs and the trigger fired constantly on healthy
+  clusters. Real memory pressure is better monitored with an operating system
+  template, which reports available memory. The macro can be raised globally,
+  per host, or per node where `FreeMem` is known to be meaningful.
+
 ### Fixed
 
 * **The template could not be imported.** Zabbix accepts version 4 UUIDs only

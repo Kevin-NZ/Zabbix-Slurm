@@ -193,7 +193,7 @@ Discovered entities:
 | Node [{#NODE}]: Draining | Info |
 | Node [{#NODE}]: In maintenance | Info |
 | Node [{#NODE}]: Load per core is above {$SLURM.NODE.LOAD.MAX} | Warning |
-| Node [{#NODE}]: Free memory is below {$SLURM.NODE.MEMORY.FREE.MIN}% | Warning |
+| Node [{#NODE}]: Free memory is below {$SLURM.NODE.MEMORY.FREE.MIN}% | Warning (off by default) |
 | Node [{#NODE}]: Has been restarted | Info |
 
 Two of these are worth calling out because they answer questions raw utilisation
@@ -206,6 +206,16 @@ graphs cannot:
 * **Cluster CPU allocation is above 95%** is deliberately *Info*: a full cluster
   is a healthy cluster. It exists to correlate with queue growth, not to page
   anyone.
+
+One is deliberately **disabled by default**: *Node free memory is below N%*.
+Slurm reports `FreeMem`, which does not count reclaimable page cache as free,
+so on any node that has been running jobs it falls towards zero during normal
+operation. `{$SLURM.NODE.MEMORY.FREE.MIN}` therefore defaults to `0`, and a
+percentage is never below zero. To detect genuine memory pressure, monitor the
+compute nodes with an operating system template, which reports *available*
+memory. Raise the macro above `0` — globally, per host, or per node with
+`{$SLURM.NODE.MEMORY.FREE.MIN:"node001"}` — only where `FreeMem` is known to be
+meaningful.
 
 ## Dashboards
 
@@ -245,7 +255,7 @@ One template dashboard with four pages:
 | `{$SLURM.PARTITION.PENDING.AGE.MAX}` | `12h` | Maximum queue wait per partition. |
 | `{$SLURM.PARTITION.NODES.DOWN.MAX}` | `0` | Nodes down per partition that are tolerated. |
 | `{$SLURM.NODE.LOAD.MAX}` | `1.5` | Load average per core considered an overload. |
-| `{$SLURM.NODE.MEMORY.FREE.MIN}` | `5` | Minimum free memory (%) on a node. |
+| `{$SLURM.NODE.MEMORY.FREE.MIN}` | `0` | Minimum free memory (%) on a node. 0 disables the check (default), see below. |
 | `{$SLURM.NODE.UPTIME.MIN}` | `10m` | Uptime below which a node counts as recently rebooted. |
 | `{$SLURM.QOS.CPU.USAGE.HIGH}` | `90` | Percentage of the QOS GrpTRES CPU limit that warns. |
 | `{$SLURM.NODE.DISCOVERY.MATCHES}` | `.*` | Node names to discover. |

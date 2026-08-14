@@ -177,8 +177,12 @@ MACROS = [
     ("{$SLURM.NODE.LOAD.MAX}", "1.5",
      "Load average per allocated core considered an overload. Usable with a "
      "node name as macro context."),
-    ("{$SLURM.NODE.MEMORY.FREE.MIN}", "5",
-     "Minimum free memory (%) on a node. Usable with a node name as macro "
+    ("{$SLURM.NODE.MEMORY.FREE.MIN}", "0",
+     "Minimum free memory (%) on a node before alerting. 0 disables the check, "
+     "which is the default: Slurm reports FreeMem, which does not count "
+     "reclaimable page cache as free, so on a healthy busy node it drops "
+     "towards zero on its own. Raise it only on clusters where the value is "
+     "known to track real memory pressure. Usable with a node name as macro "
      "context."),
     ("{$SLURM.NODE.UPTIME.MIN}", "10m",
      "Uptime below which a node is reported as recently rebooted."),
@@ -1183,8 +1187,16 @@ NODE_TRIGGERS = [
         "scope": "performance",
         "opdata": "Free: {ITEM.LASTVALUE1}",
         "depends": ["node-down"],
-        "description": "Little memory is actually free on the node. Jobs risk being killed "
-                       "by the OOM killer.",
+        "description": "Little memory is reported free on the node.\n\n"
+                       "Disabled by default: {$SLURM.NODE.MEMORY.FREE.MIN} is 0, and a "
+                       "percentage is never below 0. Slurm's FreeMem does not count "
+                       "reclaimable page cache as free, so on a node that has been running "
+                       "jobs it falls towards zero during normal operation and this trigger "
+                       "would fire constantly.\n\n"
+                       "To detect real memory pressure, monitor the compute nodes with an "
+                       "operating system template instead, which uses available memory "
+                       "rather than free memory. Set this macro above 0, per node if "
+                       "wanted, only where FreeMem is known to be meaningful.",
     },
     {
         "id": "node-rebooted",
