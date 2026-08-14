@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The collector targets Python 3.6+ for old compute images; CI covers
+        # the versions the runners still provide.
+        python-version: ['3.9', '3.11', '3.13']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Unit and end-to-end tests
+        run: python3 -m unittest discover -s tests -v
+
+  template:
+    name: Template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate the committed template
+        run: python3 tools/validate_template.py
+
+      - name: Template matches the builder
+        # Regenerating must not change the committed file: the XML is generated
+        # from tools/build_template.py and both are committed together.
+        run: |
+          python3 tools/build_template.py
+          git diff --exit-code -- templates/ \
+            || { echo "::error::templates/ is out of date, run: python3 tools/build_template.py"; exit 1; }
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          sh -n install.sh
+          for stub in tests/fakebin/*; do sh -n "$stub"; done
+
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh
