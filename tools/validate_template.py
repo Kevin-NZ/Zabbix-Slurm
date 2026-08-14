@@ -145,11 +145,11 @@ class Validator(object):
         self.triggers = {}       # (name, expression)
 
         # Sample entity names for resolving prototype paths against real data.
-        self.samples = {
-            "{#PARTITION}": [entry["name"] for entry in document.get("partitions", [])],
-            "{#QOS}": [entry["name"] for entry in document.get("qos", [])],
-            "{#NODE}": [entry["name"] for entry in document.get("nodes", [])],
-        }
+        self.samples = dict(
+            ("{#%s}" % macro, [entry["name"] for entry in document.get(key, [])])
+            for macro, key in (("PARTITION", "partitions"), ("QOS", "qos"),
+                               ("NODE", "nodes"), ("LICENSE", "licenses"),
+                               ("RESERVATION", "reservations")))
 
     # -- helpers ------------------------------------------------------------
 
@@ -562,12 +562,22 @@ class Validator(object):
         }
 
 
-def sample_document():
-    """Collect a document from the recorded Slurm output in tests/fixtures."""
+def collect(mode):
     output = subprocess.check_output(
-        [sys.executable, COLLECTOR, "--mode", "all", "--slurm-bin-dir", FAKEBIN, "--no-cache"],
+        [sys.executable, COLLECTOR, "--mode", mode, "--slurm-bin-dir", FAKEBIN, "--no-cache"],
         universal_newlines=True)
     return json.loads(output)
+
+
+def sample_document():
+    """Collect a document from the recorded Slurm output in tests/fixtures.
+
+    Accounting is collected through its own master item and merged in here, so
+    that every JSONPath in the template can be resolved against one document.
+    """
+    document = collect("all")
+    document["accounting"] = collect("accounting").get("accounting", {})
+    return document
 
 
 def validate(path=DEFAULT_TEMPLATE, document=None):

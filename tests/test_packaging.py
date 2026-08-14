@@ -40,6 +40,11 @@ class AgentConfigTest(unittest.TestCase):
         defined = re.findall(r"^UserParameter=([^,]+),", self.conf, re.MULTILINE)
         self.assertEqual(sorted(defined), sorted(MASTER_KEYS))
 
+    def test_documents_the_optional_accounting_key(self):
+        """Accounting ships commented out: it is opt-in on both sides."""
+        self.assertIn("# UserParameter=slurm.accounting,", self.conf)
+        self.assertNotIn("\nUserParameter=slurm.accounting,", self.conf)
+
     def test_active_user_parameters_share_one_cache(self):
         lines = [line for line in self.conf.splitlines()
                  if line.startswith("UserParameter=")]
@@ -49,7 +54,7 @@ class AgentConfigTest(unittest.TestCase):
     def test_every_user_parameter_selects_a_mode(self):
         for line in self.conf.splitlines():
             if line.startswith("UserParameter=") or line.startswith("# UserParameter="):
-                self.assertRegex(line, r"--mode (cluster|nodes)\b")
+                self.assertRegex(line, r"--mode (cluster|nodes|accounting)\b")
 
 
 class InstallScriptTest(unittest.TestCase):
@@ -74,10 +79,20 @@ class InstallScriptTest(unittest.TestCase):
 
     def test_writes_both_master_item_keys_in_both_modes(self):
         written = re.findall(r"^UserParameter=([^,]+),", self.script, re.MULTILINE)
-        # Two keys for the direct mode and two for the --timer mode.
-        self.assertEqual(sorted(written), sorted(MASTER_KEYS * 2))
+        # Both keys for the direct mode, both again for --timer, and the
+        # accounting key once behind --accounting.
+        self.assertEqual(sorted(written),
+                         sorted(list(MASTER_KEYS) * 2 + ["slurm.accounting"]))
         self.assertIn("--cache-only", self.script)
         self.assertIn("--cache-ttl", self.script)
+
+    def test_accounting_is_guarded_by_its_flag(self):
+        self.assertIn("--accounting) USE_ACCOUNTING=1", self.script)
+        # The accounting UserParameter is only written inside the guard.
+        guard = re.search(r'if \[ "\$USE_ACCOUNTING" -eq 1 \]; then(.+?)\nfi\n',
+                          self.script, re.DOTALL)
+        self.assertIsNotNone(guard, "accounting block not found")
+        self.assertIn("UserParameter=slurm.accounting", guard.group(1))
 
 
 class DocumentationTest(unittest.TestCase):

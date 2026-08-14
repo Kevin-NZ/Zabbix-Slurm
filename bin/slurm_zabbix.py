@@ -36,13 +36,36 @@ import sys
 import tempfile
 import time
 
-__version__ = "1.0.0"
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - not available outside Unix
+    fcntl = None
+
+__version__ = "1.1.0"
 
 MB = 1024 * 1024
 
 DEFAULT_CACHE_FILE = "/var/tmp/zabbix_slurm_cache.json"
 DEFAULT_CACHE_TTL = 55
 DEFAULT_TIMEOUT = 25
+DEFAULT_LOCK_TIMEOUT = 20
+DEFAULT_ACCOUNTING_TTL = 870
+DEFAULT_ACCOUNTING_WINDOW = 3600
+
+# Terminal job states asked of sacct, and the buckets they are counted in.
+SACCT_STATES = "CD,F,CA,TO,NF,OOM,PR"
+JOB_STATE_BUCKETS = {
+    "COMPLETED": "completed",
+    "FAILED": "failed",
+    "CANCELLED": "cancelled",
+    "TIMEOUT": "timeout",
+    "NODE_FAIL": "node_fail",
+    "OUT_OF_MEMORY": "out_of_memory",
+    "PREEMPTED": "preempted",
+}
+# Endings that mean the cluster or the job broke, as opposed to a user
+# cancelling their own job.
+FAILURE_BUCKETS = ("failed", "timeout", "node_fail", "out_of_memory")
 
 # ---------------------------------------------------------------------------
 # State handling
@@ -175,6 +198,27 @@ def parse_tres(value):
     return result
 
 
+# Slurm annotates a drain/down reason with who set it and when:
+#   "hardware maintenance scheduled [root@2024-05-03T02:15:00]"
+_REASON_ANNOTATION_RE = re.compile(
+    r"\[([^@\[\]]+)@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]\s*$")
+
+
+def parse_reason_annotation(reason):
+    """Split a node reason into (text, user, epoch).
+
+    Older Slurm releases and manually set reasons may carry no annotation, in
+    which case the user is empty and the timestamp is None.
+    """
+    if not reason:
+        return "", "", None
+    match = _REASON_ANNOTATION_RE.search(reason)
+    if not match:
+        return reason, "", None
+    text = reason[:match.start()].strip()
+    return text, match.group(1).strip(), parse_slurm_datetime(match.group(2))
+
+
 def parse_slurm_datetime(value):
     """Convert a Slurm timestamp (``2024-05-05T12:00:00``) to epoch seconds."""
     if not value or value in _NULL_VALUES:
@@ -207,6 +251,11 @@ def parse_slurm_duration(value):
     for number in numbers:
         seconds = seconds * 60 + number
     return int(days * 86400 + seconds)
+
+
+def clean(value):
+    """Normalise Slurm's placeholders for "nothing" to an empty string."""
+    return "" if value in _NULL_VALUES else value
 
 
 def percent(part, total):
@@ -442,6 +491,7 @@ class SlurmCollector(object):
         reason = record.get("Reason", "")
         if reason in _NULL_VALUES:
             reason = ""
+        reason_text, reason_user, reason_time = parse_reason_annotation(reason)
 
         partitions = record.get("Partitions", "")
         if partitions in _NULL_VALUES:
@@ -481,6 +531,14 @@ class SlurmCollector(object):
             "weight": to_int(record.get("Weight"), 0) or 0,
             "version": record.get("Version", ""),
             "reason": reason,
+            "reason_text": reason_text,
+            "reason_user": reason_user,
+            "reason_time": reason_time,
+            # How long the node has been out of service.  Reported as 0 while
+            # the node is usable, so that a node returning to service resets
+            # the metric instead of keeping the age of an old drain reason.
+            "unavailable_age": (self.now - reason_time
+                                if reason_time and not available else 0),
             "boot_time": boot_time,
             "uptime": self.now - boot_time if boot_time else None,
             "slurmd_start_time": slurmd_start,
@@ -720,27 +778,148 @@ class SlurmCollector(object):
         return qos_list
 
     def collect_reservations(self):
-        """``scontrol show reservation`` -> active reservation summary."""
-        result = {"reservations_total": 0, "reservations_active": 0, "reservations_nodes": 0}
+        """``scontrol show reservation`` -> per reservation detail and totals."""
+        summary = {"reservations_total": 0, "reservations_active": 0, "reservations_nodes": 0}
+        reservations = []
         output = self.run(["scontrol", "show", "reservation", "--oneliner"], ignore_errors=True)
         if output is None:
-            return result
+            return reservations, summary
+
         for line in output.splitlines():
             line = line.strip()
             if not line.startswith("ReservationName="):
                 continue
             record = parse_kv_line(line)
-            result["reservations_total"] += 1
+            name = record.get("ReservationName")
+            if not name:
+                continue
+
             state = record.get("State", "").upper()
             start = parse_slurm_datetime(record.get("StartTime", ""))
             end = parse_slurm_datetime(record.get("EndTime", ""))
-            active = state == "ACTIVE" or (
-                start is not None and end is not None and start <= self.now <= end
-            )
+            active = 1 if (state == "ACTIVE" or (
+                start is not None and end is not None and start <= self.now <= end)) else 0
+            nodes = to_int(record.get("NodeCnt"), 0) or 0
+
+            summary["reservations_total"] += 1
             if active:
-                result["reservations_active"] += 1
-                result["reservations_nodes"] += to_int(record.get("NodeCnt"), 0) or 0
-        return result
+                summary["reservations_active"] += 1
+                summary["reservations_nodes"] += nodes
+
+            reservations.append({
+                "name": name,
+                "state": state or ("ACTIVE" if active else "INACTIVE"),
+                "active": active,
+                "nodes": nodes,
+                "cores": to_int(record.get("CoreCnt"), 0) or 0,
+                "partition": clean(record.get("PartitionName", "")),
+                "users": clean(record.get("Users", "")),
+                "accounts": clean(record.get("Accounts", "")),
+                "flags": clean(record.get("Flags", "")),
+                "maintenance": 1 if "MAINT" in record.get("Flags", "").upper() else 0,
+                "start_time": start,
+                "end_time": end,
+                # Negative before the reservation starts, so one item shows both
+                # "starts in" and "ends in".
+                "starts_in": max(start - self.now, 0) if start else 0,
+                "remaining": max(end - self.now, 0) if end else 0,
+                "duration": (end - start) if (start and end) else 0,
+            })
+        return reservations, summary
+
+    def collect_licenses(self):
+        """``scontrol show licenses`` -> license pool usage.
+
+        Clusters that configure no licenses simply produce no output.
+        """
+        licenses = []
+        output = self.run(["scontrol", "show", "licenses", "--oneliner"], ignore_errors=True)
+        if output is None:
+            return licenses
+        for line in output.splitlines():
+            line = line.strip()
+            if not line.startswith("LicenseName="):
+                continue
+            record = parse_kv_line(line)
+            name = record.get("LicenseName")
+            if not name:
+                continue
+            total = to_int(record.get("Total"), 0) or 0
+            used = to_int(record.get("Used"), 0) or 0
+            free = to_int(record.get("Free"))
+            if free is None:
+                free = max(total - used, 0)
+            licenses.append({
+                "name": name,
+                "total": total,
+                "used": used,
+                "free": free,
+                "reserved": to_int(record.get("Reserved"), 0) or 0,
+                "remote": 1 if record.get("Remote", "no").lower() == "yes" else 0,
+                "utilization": percent(used, total),
+            })
+        return licenses
+
+    def collect_accounting(self, window=DEFAULT_ACCOUNTING_WINDOW):
+        """``sacct`` -> throughput of the jobs that finished in the last window.
+
+        This is the only collection that reads the accounting database, and it
+        is the expensive one on a busy cluster, which is why it lives behind its
+        own mode and its own cache.
+        """
+        stats = dict((key, 0) for key in
+                     ["jobs_total", "cpu_hours", "wait_mean", "wait_max",
+                      "elapsed_mean", "elapsed_max"])
+        for bucket in sorted(set(JOB_STATE_BUCKETS.values())) + ["other"]:
+            stats["jobs_" + bucket] = 0
+        stats["window"] = window
+        stats["success_rate"] = 0.0
+        stats["failure_rate"] = 0.0
+
+        start = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.now - window))
+        output = self.run([
+            "sacct", "-a", "-X", "-n", "-P",
+            "-S", start, "-E", "now",
+            "-s", SACCT_STATES,
+            "-o", "JobID,State,Submit,Start,Elapsed,AllocCPUS,Partition",
+        ])
+        if output is None:
+            return stats
+
+        waits = []
+        elapsed_times = []
+        for line in output.splitlines():
+            fields = line.strip().split("|")
+            if len(fields) < 7:
+                continue
+            stats["jobs_total"] += 1
+
+            # "CANCELLED by 1000" carries the cancelling user id.
+            state = fields[1].split(" ")[0].upper()
+            stats["jobs_" + JOB_STATE_BUCKETS.get(state, "other")] += 1
+
+            submit = parse_slurm_datetime(fields[2])
+            began = parse_slurm_datetime(fields[3])
+            if submit is not None and began is not None and began >= submit:
+                waits.append(began - submit)
+
+            elapsed = parse_slurm_duration(fields[4]) or 0
+            elapsed_times.append(elapsed)
+            stats["cpu_hours"] += elapsed * (to_int(fields[5], 0) or 0) / 3600.0
+
+        if waits:
+            stats["wait_mean"] = int(sum(waits) / len(waits))
+            stats["wait_max"] = max(waits)
+        if elapsed_times:
+            stats["elapsed_mean"] = int(sum(elapsed_times) / len(elapsed_times))
+            stats["elapsed_max"] = max(elapsed_times)
+
+        total = stats["jobs_total"]
+        stats["cpu_hours"] = round(stats["cpu_hours"], 3)
+        stats["success_rate"] = percent(stats["jobs_completed"], total)
+        stats["failure_rate"] = percent(
+            sum(stats["jobs_" + bucket] for bucket in FAILURE_BUCKETS), total)
+        return stats
 
     # -- aggregation ---------------------------------------------------------
 
@@ -801,6 +980,8 @@ class SlurmCollector(object):
             gpus["total"] += node["gpus_total"]
             gpus["allocated"] += node["gpus_allocated"]
 
+        summary["longest_unavailable_age"] = max(
+            [node["unavailable_age"] for node in nodes] or [0])
         cpus["utilization"] = percent(cpus["allocated"], cpus["total"])
         memory["utilization"] = percent(memory["allocated_bytes"], memory["total_bytes"])
         gpus["idle"] = max(gpus["total"] - gpus["allocated"], 0)
@@ -993,7 +1174,8 @@ class SlurmCollector(object):
         jobs = self.collect_jobs()
         sdiag = self.collect_sdiag()
         qos = self.collect_qos()
-        reservations = self.collect_reservations()
+        reservations, reservation_summary = self.collect_reservations()
+        licenses = self.collect_licenses()
 
         node_summary, cpus, memory, gpus = self.summarise_nodes(nodes)
         job_summary = self.summarise_jobs(jobs, config.get("max_job_count"))
@@ -1011,10 +1193,11 @@ class SlurmCollector(object):
             "slurmdbd_up": 0 if dbd["slurmdbd_up"] is None else dbd["slurmdbd_up"],
             "partitions_total": len(partitions),
             "qos_total": len(qos),
+            "licenses_total": len(licenses),
             "users_active": job_summary["users_active"],
             "accounts_active": job_summary["accounts_active"],
         }
-        cluster.update(reservations)
+        cluster.update(reservation_summary)
 
         document = {
             "meta": {
@@ -1035,9 +1218,29 @@ class SlurmCollector(object):
             "scheduler": sdiag,
             "partitions": partitions,
             "qos": qos,
+            "licenses": licenses,
+            "reservations": reservations,
             "nodes": nodes,
         }
         return prune_nulls(document)
+
+    def collect_accounting_document(self, window=DEFAULT_ACCOUNTING_WINDOW):
+        """Build the standalone document served by ``--mode accounting``."""
+        started = time.time()
+        self.now = int(started)
+        accounting = self.collect_accounting(window)
+        return prune_nulls({
+            "meta": {
+                "timestamp": self.now,
+                "age": 0,
+                "duration": round(time.time() - started, 3),
+                "cached": 0,
+                "version": __version__,
+                "errors": "; ".join(self.errors),
+                "error_count": len(self.errors),
+            },
+            "accounting": accounting,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1281,117 @@ def write_cache(path, document):
     return None
 
 
+class CollectionLock(object):
+    """Serialises collection between concurrent invocations.
+
+    Both master items are polled by the same agent and can find the cache
+    expired in the same second.  Without a lock they would each run a full
+    sweep of scontrol/squeue against slurmctld for exactly the same data.  The
+    loser of the race waits for the winner and then reads the fresh cache.
+
+    Failing to lock is never fatal: the collection still happens, it is just no
+    longer serialised.
+    """
+
+    def __init__(self, path, timeout=DEFAULT_LOCK_TIMEOUT):
+        self.path = path
+        self.timeout = timeout
+        self.acquired = False
+        self._handle = None
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exception):
+        self.release()
+        return False
+
+    def acquire(self):
+        if fcntl is None:
+            self.acquired = True  # no locking available, proceed unserialised
+            return self.acquired
+        try:
+            self._handle = open(self.path, "a+")
+        except (IOError, OSError):
+            self.acquired = True
+            return self.acquired
+
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.acquired = True
+                break
+            except (IOError, OSError):
+                if time.time() >= deadline:
+                    self.acquired = False
+                    break
+                time.sleep(0.1)
+        return self.acquired
+
+    def release(self):
+        if self._handle is None:
+            return
+        try:
+            if self.acquired and fcntl is not None:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except (IOError, OSError):
+            pass
+        finally:
+            self._handle.close()
+            self._handle = None
+
+
+def fresh_cache(path, ttl, now):
+    """Return the cached document when it is still within its TTL."""
+    cached = read_cache(path)
+    if cached is None:
+        return None
+    if now - cached.get("meta", {}).get("timestamp", 0) >= ttl:
+        return None
+    return cached
+
+
+def note_error(document, message):
+    meta = document.setdefault("meta", {})
+    meta["errors"] = "; ".join(filter(None, [meta.get("errors"), message]))
+    meta["error_count"] = meta.get("error_count", 0) + 1
+    return document
+
+
+def obtain_document(collect, cache_file, ttl, now, use_cache=True,
+                    lock_timeout=DEFAULT_LOCK_TIMEOUT):
+    """Return a document, collecting it only when the cache cannot serve it."""
+    if use_cache:
+        cached = fresh_cache(cache_file, ttl, now)
+        if cached is not None:
+            return age_document(cached, now)
+
+    if not use_cache:
+        return collect()
+
+    with CollectionLock(cache_file + ".lock", lock_timeout) as lock:
+        # Whoever held the lock has probably just refreshed the cache.
+        cached = fresh_cache(cache_file, ttl, now)
+        if cached is not None:
+            return age_document(cached, now)
+
+        if not lock.acquired:
+            # Still collecting elsewhere: serve what we have rather than pile
+            # another sweep onto slurmctld.
+            cached = read_cache(cache_file)
+            if cached is not None:
+                return note_error(age_document(cached, now),
+                                  "another collection is still running")
+
+        document = collect()
+        failure = write_cache(cache_file, document)
+        if failure:
+            note_error(document, failure)
+        return document
+
+
 def age_document(document, now):
     """Refresh the age/cached fields of a document loaded from the cache."""
     meta = document.setdefault("meta", {})
@@ -1113,7 +1427,7 @@ def slice_document(document, mode):
     ``cluster`` deliberately omits the (potentially very large) node array so
     that the frequently polled master item stays small.
     """
-    if mode == "all":
+    if mode in ("all", "accounting"):
         return document
     if mode == "nodes":
         return {"meta": document.get("meta", {}), "nodes": document.get("nodes", [])}
@@ -1144,15 +1458,20 @@ def empty_document(message):
         "scheduler": {},
         "partitions": [],
         "qos": [],
+        "licenses": [],
+        "reservations": [],
         "nodes": [],
+        "accounting": {},
     }
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Collect Slurm cluster metrics and print them as JSON for Zabbix.")
-    parser.add_argument("--mode", default="cluster", choices=("cluster", "nodes", "all"),
-                        help="which part of the document to print (default: cluster)")
+    parser.add_argument("--mode", default="cluster",
+                        choices=("cluster", "nodes", "all", "accounting"),
+                        help="which part of the document to print (default: cluster). "
+                             "'accounting' queries sacct and is cached separately")
     parser.add_argument("--cache-file", default=DEFAULT_CACHE_FILE,
                         help="cache location (default: %s)" % DEFAULT_CACHE_FILE)
     parser.add_argument("--cache-ttl", type=int, default=DEFAULT_CACHE_TTL,
@@ -1163,7 +1482,17 @@ def build_parser():
                         help="only read the cache, never run Slurm commands "
                              "(use together with a systemd timer running --refresh)")
     parser.add_argument("--refresh", action="store_true",
-                        help="collect and update the cache, printing nothing unless --mode is given")
+                        help="collect and update the cache without printing anything; "
+                             "combine with --mode accounting to refresh that cache")
+    parser.add_argument("--accounting-ttl", type=int, default=DEFAULT_ACCOUNTING_TTL,
+                        help="seconds a cached accounting document stays valid "
+                             "(default: %d)" % DEFAULT_ACCOUNTING_TTL)
+    parser.add_argument("--accounting-window", type=int, default=DEFAULT_ACCOUNTING_WINDOW,
+                        help="how far back sacct looks, in seconds (default: %d)"
+                             % DEFAULT_ACCOUNTING_WINDOW)
+    parser.add_argument("--lock-timeout", type=int, default=DEFAULT_LOCK_TIMEOUT,
+                        help="seconds to wait for a concurrent collection to finish "
+                             "(default: %d)" % DEFAULT_LOCK_TIMEOUT)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                         help="timeout in seconds for a single Slurm command (default: %d)" % DEFAULT_TIMEOUT)
     parser.add_argument("--slurm-bin-dir", default=None,
@@ -1177,43 +1506,48 @@ def build_parser():
     return parser
 
 
+def accounting_cache_file(cache_file):
+    """Accounting is collected on its own schedule, so it caches separately."""
+    return cache_file + ".accounting"
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     now = int(time.time())
-    document = None
+
+    accounting = args.mode == "accounting"
+    cache_file = accounting_cache_file(args.cache_file) if accounting else args.cache_file
+    ttl = args.accounting_ttl if accounting else args.cache_ttl
+
+    def collect():
+        collector = SlurmCollector(
+            bin_dir=args.slurm_bin_dir,
+            timeout=args.timeout,
+            enable_sacctmgr=not args.no_sacctmgr,
+        )
+        if accounting:
+            return collector.collect_accounting_document(args.accounting_window)
+        return collector.collect()
 
     if args.cache_only:
-        document = read_cache(args.cache_file)
+        document = read_cache(cache_file)
         if document is None:
-            document = empty_document("cache %s is missing or unreadable" % args.cache_file)
+            document = empty_document("cache %s is missing or unreadable" % cache_file)
         else:
             document = age_document(document, now)
     else:
-        if not args.no_cache and not args.refresh:
-            cached = read_cache(args.cache_file)
-            if cached is not None:
-                timestamp = cached.get("meta", {}).get("timestamp", 0)
-                if now - timestamp < args.cache_ttl:
-                    document = age_document(cached, now)
+        document = obtain_document(
+            collect,
+            cache_file,
+            0 if args.refresh else ttl,
+            now,
+            use_cache=not args.no_cache,
+            lock_timeout=args.lock_timeout,
+        )
 
-        if document is None:
-            collector = SlurmCollector(
-                bin_dir=args.slurm_bin_dir,
-                timeout=args.timeout,
-                enable_sacctmgr=not args.no_sacctmgr,
-            )
-            document = collector.collect()
-            if not args.no_cache:
-                failure = write_cache(args.cache_file, document)
-                if failure:
-                    meta = document["meta"]
-                    meta["errors"] = "; ".join(filter(None, [meta.get("errors"), failure]))
-                    meta["error_count"] = meta.get("error_count", 0) + 1
-
-    # "--refresh" on its own only warms the cache; asking for a mode explicitly
-    # also prints the document.
-    arguments = argv if argv is not None else sys.argv[1:]
-    if args.refresh and not any(item.startswith("--mode") for item in arguments):
+    # --refresh only warms the cache, so it stays silent: it runs from a systemd
+    # timer, where printing the document would just fill the journal.
+    if args.refresh:
         return 1 if (args.strict and document["meta"].get("error_count")) else 0
 
     payload = slice_document(document, args.mode)

@@ -5,7 +5,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+* **License monitoring.** A discovery rule over `scontrol show licenses` with
+  total, used, free, reserved and usage per pool, plus a trigger that fires when
+  a pool is exhausted *and* jobs are queueing for a license — the combination
+  that means the pool is actually too small.
+* **Reservation discovery.** Per reservation state, node and core counts, time
+  until it starts and time remaining. Reservations explain why nodes are out of
+  service, so they carry no triggers of their own. Lost reservations are cleaned
+  up after a day rather than a week.
+* **Node outage duration.** Slurm records who drained or downed a node and when;
+  that timestamp is now parsed into "unavailable for", per node and as a cluster
+  wide longest outage. Two triggers escalate capacity that was taken out of
+  service and never brought back, which is easy to lose track of on a large
+  cluster. The metric resets to 0 as soon as a node is usable again, so a node
+  returning to service does not keep alerting.
+* **Job accounting from `sacct`** behind a third master item, `slurm.accounting`:
+  completion and failure counts by ending, success and failure rate, mean and
+  longest queue wait, mean and longest runtime, and CPU hours delivered over a
+  rolling window. It ships **disabled** and runs on its own 15 minute schedule
+  with its own cache, because it is the only collection that queries the
+  accounting database. `install.sh --accounting` sets up the agent side.
+* **A lock around collection.** When both master items found the cache expired in
+  the same second they each ran a full sweep of `scontrol`/`squeue` for identical
+  data. Collection now takes a lock: the second caller waits and reads the fresh
+  cache instead of doubling the load on `slurmctld`. Failing to take the lock is
+  never fatal — collection still happens, just unserialised.
+* **Continuous integration.** GitHub Actions runs the test suite on Python 3.9,
+  3.11 and 3.13, validates the template, fails if the committed XML no longer
+  matches the builder, and runs ShellCheck over the shell scripts.
+
 ### Changed
+
+* `--refresh` no longer prints the document when a mode is given explicitly. It
+  exists to warm the cache from the systemd timer, where the output only filled
+  the journal; use `--no-cache` to force a collection and see the result.
 
 * `{$SLURM.NODE.MEMORY.FREE.MIN}` now defaults to `0`, which disables the
   *Node free memory is below N%* trigger. Slurm's `FreeMem` does not count

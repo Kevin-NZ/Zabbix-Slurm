@@ -353,6 +353,152 @@ class CollectorEndToEndTest(unittest.TestCase):
         walk(self.document, "$")
 
 
+class ReasonAnnotationTest(unittest.TestCase):
+    def test_parses_user_and_timestamp(self):
+        text, user, when = sz.parse_reason_annotation(
+            "hardware maintenance scheduled [root@2024-05-03T02:15:00]")
+        self.assertEqual(text, "hardware maintenance scheduled")
+        self.assertEqual(user, "root")
+        self.assertEqual(when, sz.parse_slurm_datetime("2024-05-03T02:15:00"))
+
+    def test_reason_without_annotation(self):
+        self.assertEqual(sz.parse_reason_annotation("just a reason"),
+                         ("just a reason", "", None))
+
+    def test_empty_reason(self):
+        self.assertEqual(sz.parse_reason_annotation(""), ("", "", None))
+
+    def test_unavailable_age_is_zero_for_usable_nodes(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        collector.now = FIXTURE_NOW
+        nodes = dict((node["name"], node) for node in collector.collect_nodes())
+        # n005 is drained with a reason set 2024-05-03T02:15:00.
+        self.assertEqual(nodes["n005"]["reason_user"], "root")
+        self.assertEqual(nodes["n005"]["reason_text"], "hardware maintenance scheduled")
+        self.assertEqual(nodes["n005"]["unavailable_age"],
+                         FIXTURE_NOW - sz.parse_slurm_datetime("2024-05-03T02:15:00"))
+        # n001 is healthy, so it reports no outage even though time has passed.
+        self.assertEqual(nodes["n001"]["unavailable_age"], 0)
+
+    def test_cluster_reports_the_longest_outage(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        collector.now = FIXTURE_NOW
+        nodes = collector.collect_nodes()
+        summary, _, _, _ = collector.summarise_nodes(nodes)
+        self.assertEqual(summary["longest_unavailable_age"],
+                         max(node["unavailable_age"] for node in nodes))
+        self.assertGreater(summary["longest_unavailable_age"], 0)
+
+
+class LicenseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.licenses = dict((entry["name"], entry) for entry in
+                            sz.SlurmCollector(bin_dir=FAKEBIN).collect_licenses())
+
+    def test_parses_every_license(self):
+        self.assertEqual(sorted(self.licenses), ["abaqus", "ansys", "matlab"])
+
+    def test_usage(self):
+        self.assertEqual(self.licenses["ansys"]["total"], 100)
+        self.assertEqual(self.licenses["ansys"]["used"], 30)
+        self.assertEqual(self.licenses["ansys"]["free"], 70)
+        self.assertAlmostEqual(self.licenses["ansys"]["utilization"], 30.0)
+
+    def test_exhausted_license(self):
+        self.assertEqual(self.licenses["matlab"]["free"], 0)
+        self.assertAlmostEqual(self.licenses["matlab"]["utilization"], 100.0)
+
+    def test_remote_and_reserved(self):
+        self.assertEqual(self.licenses["abaqus"]["remote"], 1)
+        self.assertEqual(self.licenses["abaqus"]["reserved"], 2)
+
+    def test_cluster_without_licenses(self):
+        empty = tempfile.mkdtemp(prefix="slurm-nolicense")
+        try:
+            self.assertEqual(sz.SlurmCollector(bin_dir=empty).collect_licenses(), [])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+
+class ReservationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        collector.now = FIXTURE_NOW
+        cls.reservations, cls.summary = collector.collect_reservations()
+        cls.by_name = dict((entry["name"], entry) for entry in cls.reservations)
+
+    def test_discovers_every_reservation(self):
+        self.assertEqual(sorted(self.by_name), ["maint_may", "training_june"])
+
+    def test_summary_still_matches_the_list(self):
+        self.assertEqual(self.summary["reservations_total"], len(self.reservations))
+        self.assertEqual(self.summary["reservations_active"], 1)
+        self.assertEqual(self.summary["reservations_nodes"], 2)
+
+    def test_active_maintenance_reservation(self):
+        entry = self.by_name["maint_may"]
+        self.assertEqual(entry["active"], 1)
+        self.assertEqual(entry["maintenance"], 1)
+        self.assertEqual(entry["nodes"], 2)
+        self.assertEqual(entry["cores"], 64)
+        self.assertEqual(entry["partition"], "compute")
+        self.assertEqual(entry["duration"], 12 * 3600)
+        self.assertEqual(entry["remaining"], 10 * 3600)  # ends at 22:00, now is 12:00
+        self.assertEqual(entry["starts_in"], 0)
+
+    def test_future_reservation(self):
+        entry = self.by_name["training_june"]
+        self.assertEqual(entry["active"], 0)
+        self.assertEqual(entry["maintenance"], 0)
+        self.assertGreater(entry["starts_in"], 0)
+        self.assertEqual(entry["users"], "")       # "(null)" is normalised away
+        self.assertEqual(entry["accounts"], "training")
+
+
+class AccountingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        collector.now = FIXTURE_NOW
+        cls.stats = collector.collect_accounting(3600)
+
+    def test_job_counts_by_ending(self):
+        self.assertEqual(self.stats["jobs_total"], 8)
+        self.assertEqual(self.stats["jobs_completed"], 2)
+        self.assertEqual(self.stats["jobs_failed"], 1)
+        self.assertEqual(self.stats["jobs_cancelled"], 1)
+        self.assertEqual(self.stats["jobs_timeout"], 1)
+        self.assertEqual(self.stats["jobs_node_fail"], 1)
+        self.assertEqual(self.stats["jobs_out_of_memory"], 1)
+        self.assertEqual(self.stats["jobs_preempted"], 1)
+        self.assertEqual(self.stats["jobs_other"], 0)
+
+    def test_rates(self):
+        self.assertAlmostEqual(self.stats["success_rate"], 25.0)
+        # Cancellations are a user action and are not counted as failures.
+        self.assertAlmostEqual(self.stats["failure_rate"], 50.0)
+
+    def test_wait_and_runtime(self):
+        # The cancelled job never started, so it is excluded from wait stats.
+        self.assertEqual(self.stats["wait_mean"], 120)
+        self.assertEqual(self.stats["wait_max"], 300)
+        self.assertEqual(self.stats["elapsed_mean"], 1132)
+        self.assertEqual(self.stats["elapsed_max"], 3600)
+
+    def test_cpu_hours(self):
+        self.assertAlmostEqual(self.stats["cpu_hours"], 102.533, places=3)
+
+    def test_window_is_reported(self):
+        self.assertEqual(self.stats["window"], 3600)
+
+    def test_document_shape(self):
+        document = sz.SlurmCollector(bin_dir=FAKEBIN).collect_accounting_document(3600)
+        self.assertEqual(sorted(document), ["accounting", "meta"])
+        self.assertEqual(document["meta"]["error_count"], 0)
+
+
 class SliceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -449,10 +595,146 @@ class CacheTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.cache))
         self.assertEqual(self.read_cache()["cluster"]["name"], "hpc-prod")
 
+    def test_refresh_stays_quiet_with_an_explicit_mode(self):
+        """The systemd timer refreshes the accounting cache the same way."""
+        code, stdout, stderr = self.run_collector("--refresh", "--mode", "accounting")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(stdout.strip(), "")
+        self.assertTrue(os.path.exists(sz.accounting_cache_file(self.cache)))
+
+    def test_refresh_collects_even_when_the_cache_is_fresh(self):
+        self.run_collector("--mode", "cluster")
+        first = self.read_cache()["meta"]["timestamp"]
+        time.sleep(1.1)
+        self.run_collector("--refresh")
+        self.assertGreater(self.read_cache()["meta"]["timestamp"], first)
+
     def test_output_is_a_single_line(self):
         code, stdout, _ = self.run_collector("--mode", "nodes")
         self.assertEqual(code, 0)
         self.assertEqual(len(stdout.strip().splitlines()), 1)
+
+
+class CollectionLockTest(unittest.TestCase):
+    """Concurrent agent checks must not each sweep Slurm for the same data."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="slurm-zabbix-lock")
+        self.cache = os.path.join(self.directory, "cache.json")
+        self.counter = os.path.join(self.directory, "invocations.log")
+        # A stub layer that records every Slurm command and is slow enough for
+        # a second process to arrive while the first is still collecting.
+        self.slowbin = os.path.join(self.directory, "bin")
+        os.makedirs(self.slowbin)
+        for command in ("scontrol", "squeue", "sdiag", "sacctmgr", "sacct"):
+            path = os.path.join(self.slowbin, command)
+            with open(path, "w") as handle:
+                # The fakebin command already records the invocation through
+                # $SLURM_TEST_COUNTER; this layer only makes it slow enough for
+                # a second process to arrive while the first is collecting.
+                handle.write("#!/bin/sh\nsleep 0.4\nexec %s \"$@\"\n"
+                             % os.path.join(FAKEBIN, command))
+            os.chmod(path, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def invocations(self, command):
+        if not os.path.exists(self.counter):
+            return 0
+        with open(self.counter) as handle:
+            return sum(1 for line in handle if line.startswith(command + " "))
+
+    def start(self, mode):
+        environment = os.environ.copy()
+        environment["SLURM_TEST_COUNTER"] = self.counter
+        return subprocess.Popen(
+            [sys.executable, COLLECTOR, "--mode", mode, "--slurm-bin-dir", self.slowbin,
+             "--cache-file", self.cache, "--lock-timeout", "60"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            env=environment)
+
+    def test_concurrent_invocations_collect_once(self):
+        first, second = self.start("cluster"), self.start("nodes")
+        first_out, first_err = first.communicate()
+        second_out, second_err = second.communicate()
+
+        self.assertEqual(first.returncode, 0, first_err)
+        self.assertEqual(second.returncode, 0, second_err)
+
+        # sdiag runs exactly once per collection.
+        self.assertEqual(self.invocations("sdiag"), 1,
+                         "expected a single collection, got %d" % self.invocations("sdiag"))
+
+        # Both callers still get a complete, identical document.
+        cluster = json.loads(first_out)
+        nodes = json.loads(second_out)
+        self.assertEqual(cluster["meta"]["timestamp"], nodes["meta"]["timestamp"])
+        self.assertEqual(len(nodes["nodes"]), 9)
+        self.assertEqual(cluster["nodes_summary"]["total"], 9)
+        self.assertEqual(cluster["meta"]["error_count"], 0)
+
+    def test_the_waiting_caller_reads_the_fresh_cache(self):
+        first, second = self.start("cluster"), self.start("cluster")
+        first_document = json.loads(first.communicate()[0])
+        second_document = json.loads(second.communicate()[0])
+        # One collected, the other served the cache the first one wrote.
+        self.assertEqual(sorted([first_document["meta"]["cached"],
+                                 second_document["meta"]["cached"]]), [0, 1])
+
+    def test_lock_failure_does_not_prevent_collection(self):
+        """With the lock unavailable the collector still returns data."""
+        lock = sz.CollectionLock(os.path.join(self.directory, "busy.lock"), timeout=0)
+        self.assertTrue(lock.acquire())
+        try:
+            blocked = sz.CollectionLock(os.path.join(self.directory, "busy.lock"), timeout=0)
+            self.assertFalse(blocked.acquire())
+            blocked.release()
+        finally:
+            lock.release()
+
+        # And once released the lock is free again.
+        again = sz.CollectionLock(os.path.join(self.directory, "busy.lock"), timeout=0)
+        self.assertTrue(again.acquire())
+        again.release()
+
+
+class AccountingCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="slurm-zabbix-acct")
+        self.cache = os.path.join(self.directory, "cache.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def run_collector(self, *extra):
+        argv = [sys.executable, COLLECTOR, "--slurm-bin-dir", FAKEBIN,
+                "--cache-file", self.cache] + list(extra)
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True)
+        stdout, stderr = process.communicate()
+        return process.returncode, stdout, stderr
+
+    def test_accounting_uses_its_own_cache_file(self):
+        code, stdout, stderr = self.run_collector("--mode", "accounting")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["accounting"]["jobs_total"], 8)
+        self.assertTrue(os.path.exists(sz.accounting_cache_file(self.cache)))
+        # The cluster cache is untouched: the two run on different schedules.
+        self.assertFalse(os.path.exists(self.cache))
+
+    def test_accounting_does_not_disturb_the_cluster_cache(self):
+        self.run_collector("--mode", "cluster")
+        self.run_collector("--mode", "accounting")
+        code, stdout, _ = self.run_collector("--mode", "cluster")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["nodes_summary"]["total"], 9)
+
+    def test_accounting_is_cached(self):
+        self.run_collector("--mode", "accounting")
+        code, stdout, _ = self.run_collector("--mode", "accounting")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["meta"]["cached"], 1)
 
 
 class FailureHandlingTest(unittest.TestCase):

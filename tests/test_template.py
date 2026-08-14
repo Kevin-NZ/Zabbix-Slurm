@@ -168,15 +168,13 @@ class ShippedTemplateTest(TemplateTestCase):
         validator.run()
         summary = validator.summary()
         self.assertGreater(summary["items"], 90)
-        self.assertEqual(summary["discovery rules"], 3)
+        self.assertEqual(summary["discovery rules"], 5)
         self.assertGreater(summary["triggers"], 15)
         self.assertGreater(summary["trigger prototypes"], 10)
         self.assertGreater(summary["graphs"], 10)
         self.assertGreater(summary["dashboard widgets"], 20)
 
-        self.assertEqual(sorted(validator.rules), [
-            "slurm.nodes.discovery", "slurm.partitions.discovery", "slurm.qos.discovery"])
-        for key in ("slurm.cluster", "slurm.nodes"):
+        for key in ("slurm.cluster", "slurm.nodes", "slurm.accounting"):
             self.assertIn(key, validator.items)
 
     def test_every_dependent_item_hangs_off_a_master_item(self):
@@ -188,16 +186,55 @@ class ShippedTemplateTest(TemplateTestCase):
             if master is not None:
                 masters.add(master.text)
                 dependent += 1
-        self.assertEqual(masters, {"slurm.cluster", "slurm.nodes"})
+        self.assertEqual(masters, {"slurm.cluster", "slurm.nodes", "slurm.accounting"})
         self.assertGreater(dependent, 100)
 
-    def test_no_agent_check_besides_the_two_master_items(self):
-        """The whole template must cost exactly two agent checks per interval."""
+    def test_the_only_agent_checks_are_the_master_items(self):
         tree = ET.parse(TEMPLATE)
         polled = [item for item in tree.findall(".//items/item")
                   if item.find("./master_item") is None]
         keys = sorted(item.find("key").text for item in polled)
-        self.assertEqual(keys, ["slurm.cluster", "slurm.nodes"])
+        self.assertEqual(keys, ["slurm.accounting", "slurm.cluster", "slurm.nodes"])
+
+    def test_accounting_is_disabled_by_default(self):
+        """sacct is expensive, so the default cost stays at two agent checks."""
+        tree = ET.parse(TEMPLATE)
+        enabled = []
+        for item in tree.findall(".//items/item"):
+            if item.find("./master_item") is not None:
+                continue
+            status = item.find("status")
+            if status is None or status.text != "DISABLED":
+                enabled.append(item.find("key").text)
+        self.assertEqual(sorted(enabled), ["slurm.cluster", "slurm.nodes"])
+
+        # The dependent items stay enabled, so switching the master item on is
+        # all it takes to turn the feature on.
+        accounting = [item for item in tree.findall(".//items/item")
+                      if (item.find("./master_item") is not None and
+                          item.find("./master_item/key").text == "slurm.accounting")]
+        self.assertGreater(len(accounting), 10)
+        for item in accounting:
+            self.assertIsNone(item.find("status"), item.find("key").text)
+
+    def test_discovers_every_slurm_object(self):
+        tree = ET.parse(TEMPLATE)
+        rules = sorted(rule.find("key").text
+                       for rule in tree.findall(".//discovery_rule"))
+        self.assertEqual(rules, [
+            "slurm.licenses.discovery",
+            "slurm.nodes.discovery",
+            "slurm.partitions.discovery",
+            "slurm.qos.discovery",
+            "slurm.reservations.discovery",
+        ])
+
+    def test_reservations_are_cleaned_up_quickly(self):
+        """Reservations come and go; lost ones should not linger for a week."""
+        tree = ET.parse(TEMPLATE)
+        rule = self.find(tree, ".//discovery_rule",
+                         lambda element: element.find("key").text == "slurm.reservations.discovery")
+        self.assertEqual(rule.find("lifetime").text, "1d")
 
 
 class ValidatorDetectsFaultsTest(TemplateTestCase):

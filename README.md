@@ -6,18 +6,23 @@ graphs and dashboards, and the agent glue to tie them together.
 
 The whole template costs **two Zabbix agent checks per interval**, no matter how
 large the cluster is. Both checks return one JSON document, and every one of the
-107 cluster metrics plus the per partition, per QOS and per node metrics is a
-dependent item derived from those documents. Adding a metric costs nothing extra
-on `slurmctld`.
+109 cluster metrics plus the per partition, per QOS, per license, per
+reservation and per node metrics is a dependent item derived from those
+documents. Adding a metric costs nothing extra on `slurmctld`.
 
 ```
-                         ┌──────────────────────────┐
-  scontrol ─┐            │  slurm.cluster  (1m)     │──▶ 107 dependent items
-  squeue   ─┼─▶ collector│  slurm.nodes    (2m)     │──▶ 3 discovery rules
-  sdiag    ─┤   (cache)  └──────────────────────────┘    ├─ partitions → 26 items each
-  sacctmgr ─┘                  Zabbix agent               ├─ QOS        →  7 items each
-                                                          └─ nodes      → 21 items each
+                           ┌──────────────────────────────┐
+  scontrol ─┐              │ slurm.cluster      (1m)      │─▶ 109 cluster metrics
+  squeue   ─┼─▶ collector  │ slurm.nodes        (2m)      │─▶ 5 discovery rules
+  sdiag    ─┤   (cached,   │ slurm.accounting  (15m, off) │     partitions   → 26 items
+  sacctmgr ─┤    locked)   └──────────────────────────────┘     QOS          →  7 items
+  sacct    ─┘                     Zabbix agent                  nodes        → 23 items
+                                                                licenses     →  6 items
+                                                                reservations →  8 items
 ```
+
+A third master item collects job throughput from `sacct`. It ships **disabled**,
+because it is the only collection that queries the accounting database.
 
 ## Contents
 
@@ -31,6 +36,7 @@ on `slurmctld`.
 | `tools/build_template.py` | Generates the template XML from its declarative definition |
 | `tools/validate_template.py` | Checks the template for broken references and dead JSONPaths |
 | `tests/` | Unit and end-to-end tests, with recorded Slurm output as fixtures |
+| `.github/workflows/ci.yml` | Runs the tests, the validator and ShellCheck on every push |
 
 ## Requirements
 
@@ -98,7 +104,9 @@ QOS entries and nodes.
 ## Collection modes
 
 The collector caches its results on disk, so both master items share a single
-query of Slurm.
+query of Slurm. Collection is serialised with a lock file, so when both items
+poll in the same second and find the cache expired, one collects and the other
+waits for the result instead of running a second sweep against `slurmctld`.
 
 | Mode | UserParameter | When to use |
 | --- | --- | --- |
@@ -108,6 +116,25 @@ query of Slurm.
 In timer mode the agent never runs a Slurm command. If the timer stops, the
 data age keeps growing and the template raises *Slurm: Collected data is stale*
 instead of quietly reporting old numbers.
+
+### Job accounting (optional)
+
+A third mode, `--mode accounting`, reads finished-job throughput from `sacct`:
+completion and failure counts by ending, success and failure rate, mean and
+longest queue wait, mean and longest runtime, and CPU hours delivered over a
+rolling window (one hour by default).
+
+It is opt-in on both sides, because it is the only collection that queries the
+accounting database and it is the expensive one on a busy cluster:
+
+```sh
+sudo ./install.sh --accounting        # adds the slurm.accounting UserParameter
+```
+
+then enable the **Slurm: Get accounting data** item on the host. Every
+accounting metric depends on that one item, so enabling it switches the whole
+feature on. It runs on its own 15 minute schedule with its own cache, so it
+never slows down the one minute cluster poll.
 
 ## What is collected
 
@@ -125,6 +152,8 @@ instead of quietly reporting old numbers.
 | Scheduler (`sdiag`) | controller thread count, agent queue, DBD agent queue, submission/start/completion/cancellation/failure rates, main cycle last/mean/max, cycles per minute, queue length, mean depth |
 | Backfill | cycle last/mean/max, mean and last depth, queue length, backfilled job rate, time since the last cycle |
 | Reservations | total, active, nodes reserved |
+| Licenses | number of configured license pools |
+| Outages | how long the node that has been unusable the longest has been out of service |
 
 ### Discovery
 
@@ -132,15 +161,23 @@ instead of quietly reporting old numbers.
 | --- | --- | --- | --- |
 | Partitions | `scontrol show partition`, joined with node and job data | 26 | `{$SLURM.PARTITION.DISCOVERY.MATCHES}` / `.NOT_MATCHES` |
 | QOS | `sacctmgr show qos`, joined with job data | 7 | `{$SLURM.QOS.DISCOVERY.MATCHES}` / `.NOT_MATCHES` |
-| Nodes | `scontrol show node` | 21 | `{$SLURM.NODE.DISCOVERY.MATCHES}` / `.NOT_MATCHES`, `{$SLURM.NODE.PARTITION.MATCHES}` |
+| Licenses | `scontrol show licenses` | 6 | `{$SLURM.LICENSE.DISCOVERY.MATCHES}` / `.NOT_MATCHES` |
+| Reservations | `scontrol show reservation` | 8 | `{$SLURM.RESERVATION.DISCOVERY.MATCHES}` / `.NOT_MATCHES` |
+| Nodes | `scontrol show node` | 23 | `{$SLURM.NODE.DISCOVERY.MATCHES}` / `.NOT_MATCHES`, `{$SLURM.NODE.PARTITION.MATCHES}` |
 
 Per partition: state, node counts by state, availability, CPUs (total, allocated,
 idle, unusable, %), memory, GPUs, jobs running/pending/total, CPUs requested by
 pending jobs, oldest pending job.
 
-Per node: state and state code, availability, not responding, drain reason, CPUs,
-CPU allocation, load average, load per core, memory (total, allocated, free, %),
-temporary disk, GPUs, uptime.
+Per node: state and state code, availability, not responding, drain reason and
+who set it, how long the node has been out of service, CPUs, CPU allocation,
+load average, load per core, memory (total, allocated, free, %), temporary disk,
+GPUs, uptime.
+
+Per license: total, used, free, reserved, usage %, whether the pool is remote.
+
+Per reservation: state, active, maintenance flag, nodes, cores, time until it
+starts, time remaining, duration.
 
 Per QOS: jobs running/pending/total, allocated CPUs, GrpTRES CPU limit and its
 usage, priority.
@@ -174,6 +211,9 @@ node-down/partition-down trigger for the same reason.
 | Slurm: Main scheduling cycle is slow | Warning |
 | Slurm: Backfill scheduling cycle is slow | Warning |
 | Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX} | Warning |
+| Slurm: A node has been out of service for more than {$SLURM.NODE.UNAVAILABLE.AGE.MAX} | Warning |
+| Slurm: Job failure rate is above {$SLURM.ACCOUNTING.FAILURE.RATE.MAX}% | Warning (needs accounting) |
+| Slurm: Jobs are being killed by node failures | Average (needs accounting) |
 | Slurm: Version has changed | Info |
 
 Discovered entities:
@@ -187,6 +227,8 @@ Discovered entities:
 | Partition [{#PARTITION}]: Jobs wait longer than expected | Warning |
 | Partition [{#PARTITION}]: CPU allocation is saturated | Info |
 | QOS [{#QOS}]: CPU limit is nearly exhausted | Info |
+| License [{#LICENSE}]: Pool is exhausted and jobs are waiting | Warning |
+| License [{#LICENSE}]: Usage is above {$SLURM.LICENSE.USAGE.HIGH}% | Info |
 | Node [{#NODE}]: State is DOWN or FAIL | Average |
 | Node [{#NODE}]: Not responding | Average |
 | Node [{#NODE}]: Drained | Warning |
@@ -194,6 +236,7 @@ Discovered entities:
 | Node [{#NODE}]: In maintenance | Info |
 | Node [{#NODE}]: Load per core is above {$SLURM.NODE.LOAD.MAX} | Warning |
 | Node [{#NODE}]: Free memory is below {$SLURM.NODE.MEMORY.FREE.MIN}% | Warning (off by default) |
+| Node [{#NODE}]: Out of service for more than {$SLURM.NODE.UNAVAILABLE.AGE.MAX} | Warning |
 | Node [{#NODE}]: Has been restarted | Info |
 
 Two of these are worth calling out because they answer questions raw utilisation
@@ -229,6 +272,10 @@ One template dashboard with four pages:
    throughput and queue size in CPUs.
 3. **Partitions** — CPU allocation, jobs and node health per discovered partition.
 4. **Nodes** — CPU and memory per discovered node.
+5. **Licenses and reservations** — license pools, jobs waiting on licenses,
+   active reservations and the longest current node outage.
+6. **Accounting** — job outcomes, success and failure rate, CPU hours, queue
+   wait and runtime. Empty until the accounting item is enabled.
 
 ### Viewing it
 
@@ -272,6 +319,10 @@ if node discovery is filtered out or disabled.
 | `{$SLURM.NODE.MEMORY.FREE.MIN}` | `0` | Minimum free memory (%) on a node. 0 disables the check (default), see below. |
 | `{$SLURM.NODE.UPTIME.MIN}` | `10m` | Uptime below which a node counts as recently rebooted. |
 | `{$SLURM.QOS.CPU.USAGE.HIGH}` | `90` | Percentage of the QOS GrpTRES CPU limit that warns. |
+| `{$SLURM.NODE.UNAVAILABLE.AGE.MAX}` | `7d` | How long a node may stay out of service before it counts as forgotten capacity. |
+| `{$SLURM.LICENSE.USAGE.HIGH}` | `90` | License pool usage (%) that warns. |
+| `{$SLURM.ACCOUNTING.FAILURE.RATE.MAX}` | `20` | Percentage of finished jobs that may fail before alerting. |
+| `{$SLURM.ACCOUNTING.MIN.JOBS}` | `20` | Minimum finished jobs before the failure rate is judged. |
 | `{$SLURM.NODE.DISCOVERY.MATCHES}` | `.*` | Node names to discover. |
 | `{$SLURM.NODE.DISCOVERY.NOT_MATCHES}` | `CHANGE_IF_NEEDED` | Node names to exclude. |
 | `{$SLURM.NODE.PARTITION.MATCHES}` | `.*` | Discover only nodes in matching partitions. |
@@ -279,6 +330,8 @@ if node discovery is filtered out or disabled.
 | `{$SLURM.PARTITION.DISCOVERY.NOT_MATCHES}` | `CHANGE_IF_NEEDED` | Partitions to exclude. |
 | `{$SLURM.QOS.DISCOVERY.MATCHES}` | `.*` | QOS names to discover. |
 | `{$SLURM.QOS.DISCOVERY.NOT_MATCHES}` | `CHANGE_IF_NEEDED` | QOS names to exclude. |
+| `{$SLURM.LICENSE.DISCOVERY.MATCHES}` / `.NOT_MATCHES` | `.*` / `CHANGE_IF_NEEDED` | Licenses to discover or exclude. |
+| `{$SLURM.RESERVATION.DISCOVERY.MATCHES}` / `.NOT_MATCHES` | `.*` / `CHANGE_IF_NEEDED` | Reservations to discover or exclude. |
 
 The four per-entity thresholds accept a macro context, so one node or partition
 can be treated differently from the rest:
@@ -286,6 +339,8 @@ can be treated differently from the rest:
 ```
 {$SLURM.NODE.LOAD.MAX:"gpu001"}                 = 4
 {$SLURM.PARTITION.JOBS.PENDING.MAX:"debug"}     = 50
+{$SLURM.LICENSE.USAGE.HIGH:"ansys"}             = 75
+{$SLURM.NODE.UNAVAILABLE.AGE.MAX:"oldnode01"}   = 90d
 ```
 
 ## Scaling
@@ -350,10 +405,15 @@ instead of going unsupported.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -v    # 71 tests, no Slurm required
+python3 -m unittest discover -s tests -v    # 126 tests, no Slurm required
 python3 tools/build_template.py             # regenerate templates/slurm_cluster_7.0.xml
 python3 tools/validate_template.py          # check the generated template
+make check                                  # all three
 ```
+
+GitHub Actions runs the tests on Python 3.9, 3.11 and 3.13, validates the
+template, fails if the committed XML no longer matches the builder, and runs
+ShellCheck over the shell scripts.
 
 The template is generated from the declarative definition in
 `tools/build_template.py`; edit that and regenerate rather than editing the XML.

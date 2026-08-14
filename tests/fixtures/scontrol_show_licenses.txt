@@ -1,0 +1,3 @@
+LicenseName=ansys Total=100 Used=30 Free=70 Remote=no Reserved=0
+LicenseName=matlab Total=50 Used=50 Free=0 Remote=no Reserved=0
+LicenseName=abaqus Total=20 Used=5 Free=15 Remote=yes Reserved=2

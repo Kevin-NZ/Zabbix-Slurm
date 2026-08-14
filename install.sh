@@ -5,26 +5,31 @@
 #
 #   sudo ./install.sh                 # agent, direct collection
 #   sudo ./install.sh --timer         # agent 2 / agent, cache refreshed by systemd
+#   sudo ./install.sh --accounting    # also collect job throughput from sacct
 #
 # The Zabbix template itself is imported through the Zabbix frontend, see
 # README.md.
 
 set -eu
 
-SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SOURCE_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 BIN_TARGET=/usr/local/bin/slurm_zabbix.py
 CACHE_DIR=/var/lib/zabbix-slurm
 CACHE_FILE="$CACHE_DIR/cache.json"
 ZABBIX_USER=zabbix
 USE_TIMER=0
+USE_ACCOUNTING=0
 
 usage() {
     cat <<EOF
-Usage: $0 [--timer] [--user USER] [--agent-dir DIR]
+Usage: $0 [--timer] [--accounting] [--user USER] [--agent-dir DIR]
 
   --timer        install the systemd timer and configure the agent to read the
                  cache only (recommended above a few hundred nodes)
+  --accounting   also install the slurm.accounting UserParameter, which reads
+                 job throughput from sacct. The matching item still has to be
+                 enabled on the host in Zabbix.
   --user USER    account the Zabbix agent runs as (default: $ZABBIX_USER)
   --agent-dir    agent include directory; autodetected when not given
 EOF
@@ -34,6 +39,7 @@ AGENT_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --timer) USE_TIMER=1 ;;
+        --accounting) USE_ACCOUNTING=1 ;;
         --user) ZABBIX_USER=$2; shift ;;
         --agent-dir) AGENT_DIR=$2; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -126,6 +132,16 @@ UserParameter=slurm.cluster,$BIN_TARGET --mode cluster --cache-file $CACHE_FILE 
 UserParameter=slurm.nodes,$BIN_TARGET --mode nodes --cache-file $CACHE_FILE --cache-ttl 55
 EOF
 fi
+if [ "$USE_ACCOUNTING" -eq 1 ]; then
+    if [ "$USE_TIMER" -eq 1 ]; then
+        ACCOUNTING_ARGS="--cache-only"
+    else
+        ACCOUNTING_ARGS="--accounting-window 3600"
+    fi
+    cat >> "$CONF_TARGET" <<EOF
+UserParameter=slurm.accounting,$BIN_TARGET --mode accounting --cache-file $CACHE_FILE $ACCOUNTING_ARGS
+EOF
+fi
 chmod 0644 "$CONF_TARGET"
 
 # --- systemd timer ----------------------------------------------------------
@@ -135,6 +151,14 @@ if [ "$USE_TIMER" -eq 1 ]; then
         /etc/systemd/system/zabbix-slurm-collector.service
     install -m 0644 "$SOURCE_DIR/systemd/zabbix-slurm-collector.timer" \
         /etc/systemd/system/zabbix-slurm-collector.timer
+    if [ "$USE_ACCOUNTING" -eq 1 ]; then
+        # A second ExecStart refreshes the separately cached accounting data.
+        mkdir -p /etc/systemd/system/zabbix-slurm-collector.service.d
+        cat > /etc/systemd/system/zabbix-slurm-collector.service.d/accounting.conf <<EOF
+[Service]
+ExecStart=$BIN_TARGET --refresh --mode accounting --cache-file $CACHE_FILE
+EOF
+    fi
     systemctl daemon-reload
     systemctl enable --now zabbix-slurm-collector.timer
     echo "Priming the cache"
@@ -164,3 +188,10 @@ Next steps:
   4. Import templates/slurm_cluster_7.0.xml in the Zabbix frontend and link it
      to the host.
 EOF
+
+if [ "$USE_ACCOUNTING" -eq 1 ]; then
+    cat <<EOF
+  5. Enable the "Slurm: Get accounting data" item on the host: it ships
+     disabled, and every accounting metric depends on it.
+EOF
+fi

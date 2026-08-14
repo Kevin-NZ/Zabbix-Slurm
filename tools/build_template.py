@@ -37,6 +37,7 @@ UUID_NAMESPACE = uuidlib.UUID("1f9a2c30-6d54-5f8b-9a11-5c0b7f0d21ae")
 
 MASTER_CLUSTER = "slurm.cluster"
 MASTER_NODES = "slurm.nodes"
+MASTER_ACCOUNTING = "slurm.accounting"
 
 TEMPLATE_DESCRIPTION = """Monitoring of a Slurm workload manager cluster.
 
@@ -186,6 +187,18 @@ MACROS = [
      "context."),
     ("{$SLURM.NODE.UPTIME.MIN}", "10m",
      "Uptime below which a node is reported as recently rebooted."),
+    ("{$SLURM.NODE.UNAVAILABLE.AGE.MAX}", "7d",
+     "How long a node may stay drained or down before it is reported as "
+     "forgotten capacity. Usable with a node name as macro context."),
+    ("{$SLURM.LICENSE.USAGE.HIGH}", "90",
+     "License pool usage (%) that triggers a warning. Usable with a license "
+     "name as macro context."),
+    ("{$SLURM.ACCOUNTING.FAILURE.RATE.MAX}", "20",
+     "Percentage of finished jobs that may fail before alerting. Requires the "
+     "accounting collection, which is disabled by default."),
+    ("{$SLURM.ACCOUNTING.MIN.JOBS}", "20",
+     "Minimum number of finished jobs before the failure rate is judged, so "
+     "that a quiet cluster does not alert on a couple of failures."),
     ("{$SLURM.QOS.CPU.USAGE.HIGH}", "90",
      "Percentage of the QOS GrpTRES CPU limit in use that triggers a warning."),
     ("{$SLURM.NODE.DISCOVERY.MATCHES}", ".*",
@@ -202,6 +215,14 @@ MACROS = [
      "QOS names to discover."),
     ("{$SLURM.QOS.DISCOVERY.NOT_MATCHES}", "CHANGE_IF_NEEDED",
      "QOS names to exclude from discovery."),
+    ("{$SLURM.LICENSE.DISCOVERY.MATCHES}", ".*",
+     "License names to discover."),
+    ("{$SLURM.LICENSE.DISCOVERY.NOT_MATCHES}", "CHANGE_IF_NEEDED",
+     "License names to exclude from discovery."),
+    ("{$SLURM.RESERVATION.DISCOVERY.MATCHES}", ".*",
+     "Reservation names to discover."),
+    ("{$SLURM.RESERVATION.DISCOVERY.NOT_MATCHES}", "CHANGE_IF_NEEDED",
+     "Reservation names to exclude from discovery."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -262,6 +283,77 @@ MASTER_ITEMS = [
             "Disable this item on very large clusters if per node monitoring is "
             "not wanted."),
     },
+    {
+        "key": MASTER_ACCOUNTING,
+        "name": "Slurm: Get accounting data",
+        "delay": "15m",
+        "status": "DISABLED",
+        "description": (
+            "Throughput of the jobs that finished recently, from sacct, "
+            "collected by bin/slurm_zabbix.py --mode accounting.\n\n"
+            "Disabled by default because it is the only collection that queries "
+            "the accounting database, which is expensive on a busy cluster. To "
+            "enable it:\n"
+            "1. add the slurm.accounting UserParameter on the agent host;\n"
+            "2. enable this item.\n"
+            "Every accounting metric depends on this item, so enabling it here "
+            "switches the whole feature on."),
+    },
+]
+
+ACCOUNTING_ITEMS = [
+    item("slurm.accounting.window", "Slurm: Accounting window", "$.accounting.window",
+         units="s", component="accounting", master=MASTER_ACCOUNTING, heartbeat="1d",
+         description="Period sacct was asked about. Every job count below covers "
+                     "this window."),
+    item("slurm.accounting.jobs.total", "Slurm: Jobs finished", "$.accounting.jobs_total",
+         component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.completed", "Slurm: Jobs completed",
+         "$.accounting.jobs_completed", component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.failed", "Slurm: Jobs failed", "$.accounting.jobs_failed",
+         component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.cancelled", "Slurm: Jobs cancelled",
+         "$.accounting.jobs_cancelled", component="accounting", master=MASTER_ACCOUNTING,
+         description="Jobs cancelled by a user or an administrator. Not counted as "
+                     "failures."),
+    item("slurm.accounting.jobs.timeout", "Slurm: Jobs killed by the time limit",
+         "$.accounting.jobs_timeout", component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.node_fail", "Slurm: Jobs killed by a node failure",
+         "$.accounting.jobs_node_fail", component="accounting", master=MASTER_ACCOUNTING,
+         description="Jobs lost because a node failed under them. A persistent count "
+                     "here points at unhealthy hardware."),
+    item("slurm.accounting.jobs.out_of_memory", "Slurm: Jobs killed out of memory",
+         "$.accounting.jobs_out_of_memory", component="accounting",
+         master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.preempted", "Slurm: Jobs preempted",
+         "$.accounting.jobs_preempted", component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.jobs.other", "Slurm: Jobs with another ending",
+         "$.accounting.jobs_other", component="accounting", master=MASTER_ACCOUNTING),
+    pct_item("slurm.accounting.success_rate", "Slurm: Job success rate",
+             "$.accounting.success_rate", "accounting", master=MASTER_ACCOUNTING,
+             description="Completed jobs as a percentage of all jobs that finished in "
+                         "the window."),
+    pct_item("slurm.accounting.failure_rate", "Slurm: Job failure rate",
+             "$.accounting.failure_rate", "accounting", master=MASTER_ACCOUNTING,
+             description="Jobs that failed, timed out, hit a node failure or ran out of "
+                         "memory, as a percentage of all jobs that finished. User "
+                         "cancellations are excluded."),
+    item("slurm.accounting.wait.mean", "Slurm: Mean queue wait", "$.accounting.wait_mean",
+         units="s", component="accounting", master=MASTER_ACCOUNTING,
+         description="Mean time between submission and start, for the jobs that "
+                     "finished in the window."),
+    item("slurm.accounting.wait.max", "Slurm: Longest queue wait", "$.accounting.wait_max",
+         units="s", component="accounting", master=MASTER_ACCOUNTING),
+    item("slurm.accounting.elapsed.mean", "Slurm: Mean job runtime",
+         "$.accounting.elapsed_mean", units="s", component="accounting",
+         master=MASTER_ACCOUNTING),
+    item("slurm.accounting.elapsed.max", "Slurm: Longest job runtime",
+         "$.accounting.elapsed_max", units="s", component="accounting",
+         master=MASTER_ACCOUNTING),
+    item("slurm.accounting.cpu_hours", "Slurm: CPU hours delivered",
+         "$.accounting.cpu_hours", value_type="FLOAT", units="h", component="accounting",
+         master=MASTER_ACCOUNTING,
+         description="CPU hours consumed by the jobs that finished in the window."),
 ]
 
 CLUSTER_ITEMS = [
@@ -318,6 +410,8 @@ CLUSTER_ITEMS = [
          "$.cluster.reservations_active", component="cluster"),
     item("slurm.reservations.nodes", "Slurm: Nodes in active reservations",
          "$.cluster.reservations_nodes", component="cluster"),
+    item("slurm.licenses.total", "Slurm: Licenses configured", "$.cluster.licenses_total",
+         component="licenses", heartbeat="1d"),
 
     # -- node states --------------------------------------------------------
     item("slurm.nodes.total", "Slurm: Nodes total", "$.nodes_summary.total",
@@ -364,6 +458,11 @@ CLUSTER_ITEMS = [
          "$.nodes_summary.unavailable", component="nodes"),
     pct_item("slurm.nodes.availability", "Slurm: Nodes availability",
              "$.nodes_summary.availability", "nodes"),
+    item("slurm.nodes.longest_unavailable_age", "Slurm: Longest node outage",
+         "$.nodes_summary.longest_unavailable_age", units="s", component="nodes",
+         description="How long the node that has been out of service the longest has "
+                     "been unusable, taken from the timestamp Slurm records with the "
+                     "drain or down reason. Reports 0 when every node is usable."),
 
     # -- CPU ----------------------------------------------------------------
     item("slurm.cpus.total", "Slurm: CPUs total", "$.cpus.total", component="cpu",
@@ -652,6 +751,46 @@ QOS_ITEMS = [
              heartbeat="1d"),
 ]
 
+LICENSE_ITEMS = [
+    lld_item("slurm.license.total[{#LICENSE}]", "License [{#LICENSE}]: Total", "total",
+             heartbeat="1d"),
+    lld_item("slurm.license.used[{#LICENSE}]", "License [{#LICENSE}]: Used", "used"),
+    lld_item("slurm.license.free[{#LICENSE}]", "License [{#LICENSE}]: Free", "free"),
+    lld_item("slurm.license.reserved[{#LICENSE}]", "License [{#LICENSE}]: Reserved",
+             "reserved", heartbeat="1d"),
+    lld_item("slurm.license.utilization[{#LICENSE}]", "License [{#LICENSE}]: Usage",
+             "utilization", value_type="FLOAT", units="%"),
+    lld_item("slurm.license.remote[{#LICENSE}]", "License [{#LICENSE}]: Remote",
+             "remote", valuemap="Slurm yes/no", heartbeat="1d",
+             description="Set when the pool is served by a remote license server rather "
+                         "than configured locally in Slurm."),
+]
+
+RESERVATION_ITEMS = [
+    lld_item("slurm.reservation.state[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: State", "state",
+             value_type="CHAR", heartbeat="1d", trends="0"),
+    lld_item("slurm.reservation.active[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Active", "active", valuemap="Slurm yes/no"),
+    lld_item("slurm.reservation.maintenance[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Maintenance", "maintenance",
+             valuemap="Slurm yes/no", heartbeat="1d",
+             description="Set for reservations carrying the MAINT flag, which take their "
+                         "nodes out of service."),
+    lld_item("slurm.reservation.nodes[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Nodes", "nodes"),
+    lld_item("slurm.reservation.cores[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Cores", "cores"),
+    lld_item("slurm.reservation.starts_in[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Starts in", "starts_in", units="s",
+             description="0 once the reservation has started."),
+    lld_item("slurm.reservation.remaining[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Time remaining", "remaining", units="s"),
+    lld_item("slurm.reservation.duration[{#RESERVATION}]",
+             "Reservation [{#RESERVATION}]: Duration", "duration", units="s",
+             heartbeat="1d"),
+]
+
 NODE_ITEMS = [
     lld_item("slurm.node.state[{#NODE}]", "Node [{#NODE}]: State", "state",
              value_type="CHAR", heartbeat="1d", trends="0", master=MASTER_NODES,
@@ -700,6 +839,16 @@ NODE_ITEMS = [
              "gpu_utilization", value_type="FLOAT", units="%", master=MASTER_NODES),
     lld_item("slurm.node.uptime[{#NODE}]", "Node [{#NODE}]: Uptime", "uptime",
              units="uptime", master=MASTER_NODES),
+    lld_item("slurm.node.unavailable.age[{#NODE}]", "Node [{#NODE}]: Unavailable for",
+             "unavailable_age", units="s", master=MASTER_NODES,
+             description="How long the node has been out of service, taken from the "
+                         "timestamp Slurm records with the drain or down reason. Back to "
+                         "0 as soon as the node is usable again."),
+    lld_item("slurm.node.reason.user[{#NODE}]", "Node [{#NODE}]: State set by",
+             "reason_user", value_type="CHAR", heartbeat="1d", trends="0",
+             master=MASTER_NODES,
+             description="Who drained or downed the node: an administrator, or slurm "
+                         "itself when it did so automatically."),
 ]
 
 DISCOVERY_RULES = [
@@ -731,6 +880,40 @@ DISCOVERY_RULES = [
         "items": QOS_ITEMS,
         "description": "Discovers the QOS entries known to the accounting database, plus "
                        "any QOS currently used by a job.",
+    },
+    {
+        "key": "slurm.licenses.discovery",
+        "name": "Slurm: License discovery",
+        "master": MASTER_CLUSTER,
+        "path": "$.licenses",
+        "component": "licenses",
+        "macros": [("{#LICENSE}", "$.name")],
+        "filters": [("{#LICENSE}", "MATCHES_REGEX", "{$SLURM.LICENSE.DISCOVERY.MATCHES}"),
+                    ("{#LICENSE}", "NOT_MATCHES_REGEX",
+                     "{$SLURM.LICENSE.DISCOVERY.NOT_MATCHES}")],
+        "selector": "$.licenses[?(@.name=='{#LICENSE}')].%s.first()",
+        "items": LICENSE_ITEMS,
+        "description": "Discovers the license pools reported by scontrol show licenses. "
+                       "Clusters that configure no licenses discover nothing.",
+    },
+    {
+        "key": "slurm.reservations.discovery",
+        "name": "Slurm: Reservation discovery",
+        "master": MASTER_CLUSTER,
+        "path": "$.reservations",
+        "component": "reservations",
+        # Reservations come and go, so lost ones are cleaned up quickly.
+        "lifetime": "1d",
+        "macros": [("{#RESERVATION}", "$.name"), ("{#RESERVATION_PARTITION}", "$.partition")],
+        "filters": [("{#RESERVATION}", "MATCHES_REGEX",
+                     "{$SLURM.RESERVATION.DISCOVERY.MATCHES}"),
+                    ("{#RESERVATION}", "NOT_MATCHES_REGEX",
+                     "{$SLURM.RESERVATION.DISCOVERY.NOT_MATCHES}")],
+        "selector": "$.reservations[?(@.name=='{#RESERVATION}')].%s.first()",
+        "items": RESERVATION_ITEMS,
+        "description": "Discovers the reservations reported by scontrol show reservation.\n"
+                       "Reservations explain why nodes are unavailable: a MAINT "
+                       "reservation takes its nodes out of service for the duration.",
     },
     {
         "key": "slurm.nodes.discovery",
@@ -1015,6 +1198,49 @@ TRIGGERS = [
                        "started ahead of large ones.",
     },
     {
+        "id": "job-failure-rate",
+        "name": "Slurm: Job failure rate is above {$SLURM.ACCOUNTING.FAILURE.RATE.MAX}%",
+        "expression": (expr("slurm.accounting.failure_rate", "min", "1h",
+                            ">{$SLURM.ACCOUNTING.FAILURE.RATE.MAX}") + " and " +
+                       expr("slurm.accounting.jobs.total", "min", "1h",
+                            ">{$SLURM.ACCOUNTING.MIN.JOBS}")),
+        "priority": "WARNING",
+        "scope": "performance",
+        "opdata": "Failure rate: {ITEM.LASTVALUE1}, jobs: {ITEM.LASTVALUE2}",
+        "depends": [CTLD_DOWN, NO_DATA],
+        "description": "Jobs are failing, timing out, hitting node failures or running out "
+                       "of memory more often than expected. The job count guard keeps the "
+                       "trigger quiet on an idle cluster where a couple of failures would "
+                       "otherwise be a large percentage.\n\n"
+                       "Requires the accounting collection, which is disabled by default.",
+    },
+    {
+        "id": "node-failures",
+        "name": "Slurm: Jobs are being killed by node failures",
+        "expression": expr("slurm.accounting.jobs.node_fail", "min", "1h", ">0"),
+        "priority": "AVERAGE",
+        "scope": "availability",
+        "opdata": "Jobs lost: {ITEM.LASTVALUE1}",
+        "depends": [CTLD_DOWN, NO_DATA],
+        "description": "Jobs were lost because the nodes running them failed. Unlike a "
+                       "drained node, this destroys work that has already been done.\n\n"
+                       "Requires the accounting collection, which is disabled by default.",
+    },
+    {
+        "id": "nodes-unavailable-long",
+        "name": "Slurm: A node has been out of service for more than "
+                "{$SLURM.NODE.UNAVAILABLE.AGE.MAX}",
+        "expression": expr("slurm.nodes.longest_unavailable_age", "min", "30m",
+                           ">{$SLURM.NODE.UNAVAILABLE.AGE.MAX}"),
+        "priority": "WARNING",
+        "scope": "capacity",
+        "opdata": "Longest outage: {ITEM.LASTVALUE1}",
+        "depends": [CTLD_DOWN, NO_DATA],
+        "description": "Capacity has been out of service for a long time. This works "
+                       "without node discovery, so it still fires on clusters where per "
+                       "node monitoring is switched off.",
+    },
+    {
         "id": "version-changed",
         "name": "Slurm: Version has changed",
         # change() is numeric only, so string values are compared explicitly.
@@ -1094,6 +1320,33 @@ PARTITION_TRIGGERS = [
         "scope": "capacity",
         "opdata": "Allocation: {ITEM.LASTVALUE1}, pending: {ITEM.LASTVALUE2}",
         "depends": ["partition-backlog"],
+    },
+]
+
+LICENSE_TRIGGERS = [
+    {
+        "id": "license-exhausted",
+        "name": "License [{#LICENSE}]: Pool is exhausted and jobs are waiting",
+        "expression": (expr("slurm.license.free[{#LICENSE}]", "max", "15m", "=0") +
+                       " and " +
+                       expr("slurm.jobs.pending.licenses", "min", "15m", ">0")),
+        "priority": "WARNING",
+        "scope": "capacity",
+        "opdata": "Used: {ITEM.LASTVALUE1}",
+        "description": "Every token of this license is checked out and jobs are queueing "
+                       "for a license. Either the pool is too small or tokens are held by "
+                       "jobs that are not using them.",
+    },
+    {
+        "id": "license-usage",
+        "name": "License [{#LICENSE}]: Usage is above {$SLURM.LICENSE.USAGE.HIGH}%",
+        "expression": expr("slurm.license.utilization[{#LICENSE}]", "min", "30m",
+                           ">{$SLURM.LICENSE.USAGE.HIGH:\"{#LICENSE}\"}"),
+        "priority": "INFO",
+        "scope": "capacity",
+        "opdata": "Usage: {ITEM.LASTVALUE1}",
+        "depends": ["license-exhausted"],
+        "description": "The license pool is close to being fully consumed.",
     },
 ]
 
@@ -1199,6 +1452,24 @@ NODE_TRIGGERS = [
                        "wanted, only where FreeMem is known to be meaningful.",
     },
     {
+        "id": "node-unavailable-long",
+        "name": "Node [{#NODE}]: Out of service for more than "
+                "{$SLURM.NODE.UNAVAILABLE.AGE.MAX}",
+        "expression": (expr("slurm.node.unavailable.age[{#NODE}]", "min", "30m",
+                            ">{$SLURM.NODE.UNAVAILABLE.AGE.MAX:\"{#NODE}\"}") +
+                       " and " +
+                       expr("slurm.node.available[{#NODE}]", "last", "", "=0")),
+        "priority": "WARNING",
+        "scope": "availability",
+        "opdata": "Unavailable for: {ITEM.LASTVALUE1}",
+        "description": "The node has been drained or down for a long time, measured from "
+                       "the timestamp Slurm recorded with the reason.\n\n"
+                       "This deliberately does not depend on the node being down: it is "
+                       "the escalation for capacity that was taken out of service and "
+                       "never brought back, which is easy to lose track of on a large "
+                       "cluster.",
+    },
+    {
         "id": "node-rebooted",
         "name": "Node [{#NODE}]: Has been restarted",
         "expression": expr("slurm.node.uptime[{#NODE}]", "last", "", "<{$SLURM.NODE.UPTIME.MIN}"),
@@ -1216,6 +1487,10 @@ for _rule in DISCOVERY_RULES:
         "slurm.partitions.discovery": PARTITION_TRIGGERS,
         "slurm.qos.discovery": QOS_TRIGGERS,
         "slurm.nodes.discovery": NODE_TRIGGERS,
+        "slurm.licenses.discovery": LICENSE_TRIGGERS,
+        # Reservations are informational: they explain alerts rather than
+        # raising any of their own.
+        "slurm.reservations.discovery": [],
     }[_rule["key"]]
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +1566,20 @@ GRAPHS = [
         ("slurm.backfill.last_depth", BLUE), ("slurm.backfill.depth_mean", GREEN),
         ("slurm.backfill.queue_length", ORANGE), ("slurm.backfill.jobs.rate", TEAL),
     ]),
+    ("Slurm: Job outcomes", [
+        ("slurm.accounting.jobs.completed", GREEN),
+        ("slurm.accounting.jobs.failed", RED),
+        ("slurm.accounting.jobs.cancelled", GREY),
+        ("slurm.accounting.jobs.timeout", ORANGE),
+        ("slurm.accounting.jobs.node_fail", DARKRED),
+        ("slurm.accounting.jobs.out_of_memory", PURPLE),
+        ("slurm.accounting.jobs.preempted", OLIVE),
+        ("slurm.accounting.jobs.other", PLUM),
+    ]),
+    ("Slurm: Job wait and runtime", [
+        ("slurm.accounting.wait.mean", BLUE), ("slurm.accounting.wait.max", LIGHTBLUE),
+        ("slurm.accounting.elapsed.mean", GREEN), ("slurm.accounting.elapsed.max", SAGE),
+    ]),
 ]
 
 GRAPH_PROTOTYPES = [
@@ -1307,6 +1596,11 @@ GRAPH_PROTOTYPES = [
         ("slurm.partition.nodes.available[{#PARTITION}]", GREEN),
         ("slurm.partition.nodes.down[{#PARTITION}]", RED),
         ("slurm.partition.nodes.drain[{#PARTITION}]", ORANGE),
+    ]),
+    ("slurm.licenses.discovery", "License [{#LICENSE}]: Usage", [
+        ("slurm.license.used[{#LICENSE}]", BLUE),
+        ("slurm.license.free[{#LICENSE}]", GREEN),
+        ("slurm.license.total[{#LICENSE}]", GREY),
     ]),
     ("slurm.nodes.discovery", "Node [{#NODE}]: CPU", [
         ("slurm.node.cpus.allocated[{#NODE}]", BLUE),
@@ -1414,6 +1708,27 @@ DASHBOARDS = [
             graph_prototype_widget("Node memory", "Node [{#NODE}]: Memory", 36, 0,
                                    columns=1, rows=3),
         ]),
+        ("Licenses and reservations", [
+            value_widget("Licenses configured", "slurm.licenses.total", 0, 0),
+            value_widget("Jobs waiting on licenses", "slurm.jobs.pending.licenses", 12, 0),
+            value_widget("Reservations active", "slurm.reservations.active", 24, 0),
+            value_widget("Reserved nodes", "slurm.reservations.nodes", 36, 0),
+            value_widget("Reservations total", "slurm.reservations.total", 48, 0),
+            value_widget("Longest node outage", "slurm.nodes.longest_unavailable_age",
+                         60, 0),
+            graph_prototype_widget("License usage", "License [{#LICENSE}]: Usage",
+                                   0, 3, width=72, height=12, columns=2, rows=2),
+        ]),
+        ("Accounting", [
+            value_widget("Jobs finished", "slurm.accounting.jobs.total", 0, 0),
+            value_widget("Success rate", "slurm.accounting.success_rate", 12, 0),
+            value_widget("Failure rate", "slurm.accounting.failure_rate", 24, 0),
+            value_widget("CPU hours delivered", "slurm.accounting.cpu_hours", 36, 0),
+            value_widget("Mean queue wait", "slurm.accounting.wait.mean", 48, 0),
+            value_widget("Mean job runtime", "slurm.accounting.elapsed.mean", 60, 0),
+            graph_widget("Job outcomes", "Slurm: Job outcomes", 0, 3),
+            graph_widget("Job wait and runtime", "Slurm: Job wait and runtime", 36, 3),
+        ]),
     ]),
 ]
 
@@ -1500,6 +1815,8 @@ def render_master_item(parent, definition):
     sub(element, "history", "0")
     sub(element, "trends", "0")
     sub(element, "value_type", "TEXT")
+    if definition.get("status"):
+        sub(element, "status", definition["status"])
     sub(element, "description", definition["description"])
     add_tags(element, [("component", "raw")])
     return element
@@ -1566,7 +1883,7 @@ def build():
     items_element = sub(template, "items")
     for definition in MASTER_ITEMS:
         render_master_item(items_element, definition)
-    for definition in CLUSTER_ITEMS:
+    for definition in CLUSTER_ITEMS + ACCOUNTING_ITEMS:
         render_item(items_element, definition, "item")
 
     # -- discovery rules ----------------------------------------------------
@@ -1577,7 +1894,7 @@ def build():
         sub(rule_element, "name", rule["name"])
         sub(rule_element, "type", "DEPENDENT")
         sub(rule_element, "key", rule["key"])
-        sub(rule_element, "lifetime", "7d")
+        sub(rule_element, "lifetime", rule.get("lifetime", "7d"))
         sub(rule_element, "description", rule["description"])
 
         prototypes = sub(rule_element, "item_prototypes")

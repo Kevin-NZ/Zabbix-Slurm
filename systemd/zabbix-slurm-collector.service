@@ -9,6 +9,11 @@ User=zabbix
 Group=zabbix
 ExecStart=/usr/local/bin/slurm_zabbix.py --refresh --cache-file /var/lib/zabbix-slurm/cache.json
 
+# Job accounting is collected on its own schedule and cached separately.  It is
+# optional; uncomment to refresh it too.  Its cache has a 15 minute lifetime, so
+# most of these runs return immediately from the cache.
+# ExecStart=/usr/local/bin/slurm_zabbix.py --refresh --mode accounting --cache-file /var/lib/zabbix-slurm/cache.json
+
 # The cache directory is created on first start if it does not exist.
 StateDirectory=zabbix-slurm
 StateDirectoryMode=0750
