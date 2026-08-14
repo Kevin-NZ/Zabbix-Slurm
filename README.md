@@ -230,6 +230,20 @@ One template dashboard with four pages:
 3. **Partitions** — CPU allocation, jobs and node health per discovered partition.
 4. **Nodes** — CPU and memory per discovered node.
 
+### Viewing it
+
+Template dashboards render in **host** context. Open them through
+
+*Monitoring → Hosts →* click the host *→ Dashboards*
+
+and pick the time range with the selector at the top right. The dashboard as
+shown under *Data collection → Templates → … → Dashboards* is the editing view:
+it has no host behind it, so every widget there is empty by design.
+
+The *Partitions* and *Nodes* pages are built from graph prototypes and stay
+empty until discovery has created the graphs, which also means they stay empty
+if node discovery is filtered out or disabled.
+
 ## Macros
 
 | Macro | Default | Description |
