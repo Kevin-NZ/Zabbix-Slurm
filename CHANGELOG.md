@@ -38,6 +38,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* *Slurm: Backfill scheduler has not run for N* now also requires pending jobs.
+  The backfill scheduler only runs when there is something to backfill, so on an
+  idle cluster the age of its last cycle grows by itself and the trigger fired
+  on a perfectly healthy system. The queue has to have been continuously
+  non-empty for 15 minutes for the alert to mean anything.
 * `--refresh` no longer prints the document when a mode is given explicitly. It
   exists to warm the cache from the systemd timer, where the output only filled
   the journal; use `--no-cache` to force a collection and see the result.

@@ -156,6 +156,22 @@ class ShippedTemplateTest(TemplateTestCase):
         self.assertTrue(any("length(last(/" in expression for expression in expressions),
                         "expected at least one length(last(...)) expression")
 
+    def test_idle_cluster_triggers_are_guarded_by_a_queue(self):
+        """Metrics that only move when work is queued must check for pending jobs.
+
+        The backfill scheduler does not run when there is nothing to backfill,
+        so the age of its last cycle grows by itself on an idle cluster.
+        """
+        tree = ET.parse(TEMPLATE)
+        trigger = self.find(
+            tree, "./triggers/trigger",
+            lambda element: element.find("name").text.startswith(
+                "Slurm: Backfill scheduler has not run"))
+        expression = trigger.find("expression").text
+        self.assertIn("slurm.backfill.last_cycle_age", expression)
+        self.assertIn("slurm.jobs.pending", expression)
+        self.assertRegex(expression, r"min\(/[^)]*slurm\.jobs\.pending,[^)]*\)>0")
+
     def test_uses_the_standard_template_group_uuid(self):
         """Templates/Applications already exists in every Zabbix installation."""
         tree = ET.parse(TEMPLATE)

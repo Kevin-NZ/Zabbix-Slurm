@@ -210,7 +210,7 @@ node-down/partition-down trigger for the same reason.
 | Slurm: Job table usage is above {$SLURM.JOBS.USAGE.HIGH}% | Average |
 | Slurm: Main scheduling cycle is slow | Warning |
 | Slurm: Backfill scheduling cycle is slow | Warning |
-| Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX} | Warning |
+| Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX} (with jobs queued) | Warning |
 | Slurm: A node has been out of service for more than {$SLURM.NODE.UNAVAILABLE.AGE.MAX} | Warning |
 | Slurm: Job failure rate is above {$SLURM.ACCOUNTING.FAILURE.RATE.MAX}% | Warning (needs accounting) |
 | Slurm: Jobs are being killed by node failures | Average (needs accounting) |

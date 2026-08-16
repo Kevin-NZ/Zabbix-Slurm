@@ -8651,10 +8651,13 @@ This deliberately does not depend on the node being down: it is the escalation f
         </trigger>
         <trigger>
             <uuid>8215987fb1274f109700badbc46fd13e</uuid>
-            <expression>min(/Slurm cluster by Zabbix agent/slurm.backfill.last_cycle_age,15m)&gt;{$SLURM.BACKFILL.AGE.MAX}</expression>
+            <expression>min(/Slurm cluster by Zabbix agent/slurm.backfill.last_cycle_age,15m)&gt;{$SLURM.BACKFILL.AGE.MAX} and min(/Slurm cluster by Zabbix agent/slurm.jobs.pending,15m)&gt;0</expression>
             <name>Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX}</name>
+            <opdata>Last cycle: {ITEM.LASTVALUE1}, pending: {ITEM.LASTVALUE2}</opdata>
             <priority>WARNING</priority>
-            <description>No backfill cycle completed recently. Small jobs will no longer be started ahead of large ones.</description>
+            <description>No backfill cycle completed recently while jobs were queueing, so small jobs are no longer being started ahead of large ones.
+
+The queue has to have been continuously non-empty for the last 15 minutes: on an idle cluster the backfill scheduler has nothing to do and the age of its last cycle grows by itself, which is normal and not worth an alert.</description>
             <dependencies>
                 <dependency>
                     <name>Slurm: slurmctld is not responding</name>

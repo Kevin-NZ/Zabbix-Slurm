@@ -1189,13 +1189,22 @@ TRIGGERS = [
     {
         "id": "backfill-stalled",
         "name": "Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX}",
-        "expression": expr("slurm.backfill.last_cycle_age", "min", "15m",
-                           ">{$SLURM.BACKFILL.AGE.MAX}"),
+        # The backfill scheduler only runs when there is something to backfill,
+        # so the age of the last cycle grows on its own whenever the queue is
+        # empty.  Without pending jobs there is nothing to alert about.
+        "expression": (expr("slurm.backfill.last_cycle_age", "min", "15m",
+                            ">{$SLURM.BACKFILL.AGE.MAX}") + " and " +
+                       expr("slurm.jobs.pending", "min", "15m", ">0")),
         "priority": "WARNING",
         "scope": "performance",
+        "opdata": "Last cycle: {ITEM.LASTVALUE1}, pending: {ITEM.LASTVALUE2}",
         "depends": [CTLD_DOWN, NO_DATA],
-        "description": "No backfill cycle completed recently. Small jobs will no longer be "
-                       "started ahead of large ones.",
+        "description": "No backfill cycle completed recently while jobs were queueing, so "
+                       "small jobs are no longer being started ahead of large ones.\n\n"
+                       "The queue has to have been continuously non-empty for the last 15 "
+                       "minutes: on an idle cluster the backfill scheduler has nothing to "
+                       "do and the age of its last cycle grows by itself, which is normal "
+                       "and not worth an alert.",
     },
     {
         "id": "job-failure-rate",
