@@ -2523,6 +2523,36 @@ Every accounting metric depends on this item, so enabling it here switches the w
                     </tags>
                 </item>
                 <item>
+                    <uuid>0f5325add18b4cf9ba66a93d81589a8f</uuid>
+                    <name>Slurm: Pending jobs - blocked by a limit</name>
+                    <type>DEPENDENT</type>
+                    <key>slurm.jobs.pending.limited</key>
+                    <history>7d</history>
+                    <trends>365d</trends>
+                    <value_type>UNSIGNED</value_type>
+                    <description>Pending jobs held back by a QOS, association or partition limit, or by a reason the collector does not recognise.
+
+Jobs waiting for resources, priority, a dependency, a license, a reservation or a hold are deliberately excluded: they are waiting for something identifiable and cannot start whatever the cluster looks like.</description>
+                    <preprocessing>
+                        <step>
+                            <type>JSONPATH</type>
+                            <parameters>
+                                <parameter>$.jobs.pending_limited</parameter>
+                            </parameters>
+                            <error_handler>DISCARD_VALUE</error_handler>
+                        </step>
+                    </preprocessing>
+                    <master_item>
+                        <key>slurm.cluster</key>
+                    </master_item>
+                    <tags>
+                        <tag>
+                            <tag>component</tag>
+                            <value>jobs</value>
+                        </tag>
+                    </tags>
+                </item>
+                <item>
                     <uuid>733e564c0e464db4aa30259672bca743</uuid>
                     <name>Slurm: Controller thread count</name>
                     <type>DEPENDENT</type>
@@ -6862,6 +6892,7 @@ This deliberately does not depend on the node being down: it is the escalation f
                 <dashboard>
                     <uuid>e10d32c8ba5c4645bb8af39cd146c137</uuid>
                     <name>Slurm cluster overview</name>
+                    <auto_start>NO</auto_start>
                     <pages>
                         <page>
                             <name>Cluster</name>
@@ -8555,11 +8586,13 @@ This deliberately does not depend on the node being down: it is the escalation f
         </trigger>
         <trigger>
             <uuid>f28532ea101b41faacb18f5d614947ff</uuid>
-            <expression>min(/Slurm cluster by Zabbix agent/slurm.jobs.pending.resources,30m)=0 and min(/Slurm cluster by Zabbix agent/slurm.jobs.pending,30m)&gt;0 and min(/Slurm cluster by Zabbix agent/slurm.cpus.idle,30m)&gt;0</expression>
-            <name>Slurm: Jobs are blocked while the cluster has free CPUs</name>
-            <opdata>Pending: {ITEM.LASTVALUE2}, idle CPUs: {ITEM.LASTVALUE3}</opdata>
+            <expression>min(/Slurm cluster by Zabbix agent/slurm.jobs.pending.resources,30m)=0 and min(/Slurm cluster by Zabbix agent/slurm.jobs.pending.limited,30m)&gt;0 and min(/Slurm cluster by Zabbix agent/slurm.cpus.idle,30m)&gt;0</expression>
+            <name>Slurm: Jobs are blocked by a limit while the cluster has free CPUs</name>
+            <opdata>Blocked: {ITEM.LASTVALUE2}, idle CPUs: {ITEM.LASTVALUE3}</opdata>
             <priority>WARNING</priority>
-            <description>Jobs are queueing although CPUs are idle and no job is waiting for resources. Points at a limit (QOS, association, partition) or at a scheduling problem rather than at a lack of capacity.</description>
+            <description>Jobs are held back by a QOS, association or partition limit while CPUs are idle and nothing is waiting for resources. That points at a limit or a scheduling problem rather than at a lack of capacity.
+
+Jobs waiting on a dependency, a license, a reservation or a hold are excluded: they are waiting for something identifiable and cannot start however much capacity is free. Use the pending reason breakdown to see the whole queue.</description>
             <dependencies>
                 <dependency>
                     <name>Slurm: slurmctld is not responding</name>

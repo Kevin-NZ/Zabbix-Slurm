@@ -38,6 +38,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* *Slurm: Jobs are blocked while the cluster has free CPUs* counted every
+  pending job, so it fired whenever anything was waiting on a dependency — which
+  no amount of free capacity can resolve. It now counts only jobs held back by a
+  QOS, association or partition limit, or by a reason the collector does not
+  recognise, exposed as the new item *Pending jobs - blocked by a limit*. Jobs
+  waiting for a dependency, a licence, a reservation or a hold are excluded, and
+  the trigger is renamed to say what it means.
+* The template dashboard no longer starts its slideshow automatically. Zabbix
+  does that by default on a multi-page dashboard, rotating the page away while
+  somebody is reading it.
 * *Slurm: Backfill scheduler has not run for N* now also requires pending jobs.
   The backfill scheduler only runs when there is something to backfill, so on an
   idle cluster the age of its last cycle grows by itself and the trigger fired

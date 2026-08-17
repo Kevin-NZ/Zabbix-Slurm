@@ -569,6 +569,14 @@ CLUSTER_ITEMS = [
                      "time, or limited by an array task limit."),
     item("slurm.jobs.pending.other", "Slurm: Pending jobs - other reasons",
          "$.jobs.pending_other", component="jobs"),
+    item("slurm.jobs.pending.limited", "Slurm: Pending jobs - blocked by a limit",
+         "$.jobs.pending_limited", component="jobs",
+         description="Pending jobs held back by a QOS, association or partition limit, or "
+                     "by a reason the collector does not recognise.\n\n"
+                     "Jobs waiting for resources, priority, a dependency, a license, a "
+                     "reservation or a hold are deliberately excluded: they are waiting "
+                     "for something identifiable and cannot start whatever the cluster "
+                     "looks like."),
 
     # -- scheduler ----------------------------------------------------------
     item("slurm.sched.server_thread_count", "Slurm: Controller thread count",
@@ -1139,17 +1147,25 @@ TRIGGERS = [
     },
     {
         "id": "jobs-blocked",
-        "name": "Slurm: Jobs are blocked while the cluster has free CPUs",
+        "name": "Slurm: Jobs are blocked by a limit while the cluster has free CPUs",
+        # Only jobs held back by a limit count here.  Counting every pending job
+        # made this fire whenever something was waiting on a dependency, which
+        # no amount of free capacity can resolve.
         "expression": (expr("slurm.jobs.pending.resources", "min", "30m", "=0") + " and " +
-                       expr("slurm.jobs.pending", "min", "30m", ">0") + " and " +
+                       expr("slurm.jobs.pending.limited", "min", "30m", ">0") + " and " +
                        expr("slurm.cpus.idle", "min", "30m", ">0")),
         "priority": "WARNING",
         "scope": "capacity",
-        "opdata": "Pending: {ITEM.LASTVALUE2}, idle CPUs: {ITEM.LASTVALUE3}",
+        "opdata": "Blocked: {ITEM.LASTVALUE2}, idle CPUs: {ITEM.LASTVALUE3}",
         "depends": [CTLD_DOWN, NO_DATA],
-        "description": "Jobs are queueing although CPUs are idle and no job is waiting for "
-                       "resources. Points at a limit (QOS, association, partition) or at a "
-                       "scheduling problem rather than at a lack of capacity.",
+        "description": "Jobs are held back by a QOS, association or partition limit while "
+                       "CPUs are idle and nothing is waiting for resources. That points at "
+                       "a limit or a scheduling problem rather than at a lack of "
+                       "capacity.\n\n"
+                       "Jobs waiting on a dependency, a license, a reservation or a hold "
+                       "are excluded: they are waiting for something identifiable and "
+                       "cannot start however much capacity is free. Use the pending reason "
+                       "breakdown to see the whole queue.",
     },
     {
         "id": "jobs-table",
@@ -1979,6 +1995,9 @@ def build():
         dashboard = sub(dashboards, "dashboard")
         sub(dashboard, "uuid", make_uuid("dashboard", dashboard_name))
         sub(dashboard, "name", dashboard_name)
+        # Zabbix starts the slideshow by itself on a multi-page dashboard, which
+        # rotates the pages away while somebody is reading one of them.
+        sub(dashboard, "auto_start", "NO")
         pages_element = sub(dashboard, "pages")
         references = 0
         for page_name, widgets in pages:

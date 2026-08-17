@@ -130,6 +130,14 @@ PENDING_REASON_BUCKETS = (
 
 PENDING_REASON_KEYS = [name for name, _ in PENDING_REASON_BUCKETS] + ["other"]
 
+# Reasons that mean a job is held back by policy or configuration rather than
+# by something it is legitimately waiting for.  A job waiting on a dependency,
+# a licence, a reservation window or a hold cannot start however much capacity
+# is free, so counting it as "blocked" only produces false alarms; a job held
+# back by a QOS, association or partition limit is worth looking at when the
+# cluster has idle CPUs.
+LIMIT_REASON_BUCKETS = ("qos_limit", "association_limit", "partition", "other")
+
 # ---------------------------------------------------------------------------
 # Generic parsing helpers
 # ---------------------------------------------------------------------------
@@ -1049,6 +1057,8 @@ class SlurmCollector(object):
             if job["account"]:
                 accounts.add(job["account"])
 
+        summary["pending_limited"] = sum(summary["pending_" + bucket]
+                                         for bucket in LIMIT_REASON_BUCKETS)
         summary["users_active"] = len(users)
         summary["accounts_active"] = len(accounts)
         if pending_ages:

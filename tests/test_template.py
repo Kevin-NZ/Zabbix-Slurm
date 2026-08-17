@@ -106,6 +106,16 @@ class ShippedTemplateTest(TemplateTestCase):
             self.assertEqual((parsed.int >> 62) & 0x3, 0x2,
                              "%s has the wrong variant bits" % value)
 
+    def test_dashboard_does_not_auto_start_the_slideshow(self):
+        """Six pages rotating away under the reader is not helpful."""
+        tree = ET.parse(TEMPLATE)
+        dashboards = tree.findall(".//dashboards/dashboard")
+        self.assertTrue(dashboards)
+        for dashboard in dashboards:
+            auto_start = dashboard.find("auto_start")
+            self.assertIsNotNone(auto_start, dashboard.find("name").text)
+            self.assertEqual(auto_start.text, "NO")
+
     def test_widget_fields_follow_the_zabbix_7_contract(self):
         """Zabbix 7.0 indexes object fields and wants a reference on graphs.
 
@@ -171,6 +181,18 @@ class ShippedTemplateTest(TemplateTestCase):
         self.assertIn("slurm.backfill.last_cycle_age", expression)
         self.assertIn("slurm.jobs.pending", expression)
         self.assertRegex(expression, r"min\(/[^)]*slurm\.jobs\.pending,[^)]*\)>0")
+
+    def test_blocked_jobs_trigger_ignores_legitimately_waiting_jobs(self):
+        """Dependencies, holds, licences and reservations are not "blocked"."""
+        tree = ET.parse(TEMPLATE)
+        trigger = self.find(
+            tree, "./triggers/trigger",
+            lambda element: element.find("name").text.startswith(
+                "Slurm: Jobs are blocked"))
+        expression = trigger.find("expression").text
+        self.assertIn("slurm.jobs.pending.limited", expression)
+        # The raw pending count would include dependency-blocked jobs.
+        self.assertNotRegex(expression, r"slurm\.jobs\.pending,")
 
     def test_uses_the_standard_template_group_uuid(self):
         """Templates/Applications already exists in every Zabbix installation."""

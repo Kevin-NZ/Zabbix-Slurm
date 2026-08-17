@@ -254,6 +254,42 @@ class CollectorEndToEndTest(unittest.TestCase):
         self.assertEqual(bucketed, jobs["pending"])
         self.assertIn("Priority: 2", jobs["top_pending_reasons"])
 
+    def test_only_limit_reasons_count_as_blocked(self):
+        """A job waiting on a dependency is not blocked by the cluster."""
+        jobs = self.document["jobs"]
+        # QOS limit, association limit and partition; the dependency, held,
+        # priority and resources jobs are all excluded.
+        self.assertEqual(jobs["pending_limited"], 3)
+        self.assertEqual(
+            jobs["pending_limited"],
+            sum(jobs["pending_" + bucket] for bucket in sz.LIMIT_REASON_BUCKETS))
+        self.assertLess(jobs["pending_limited"], jobs["pending"])
+
+    def test_a_queue_of_dependencies_is_never_blocked(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        waiting = [{"id": str(index), "partition": "compute", "state": "PENDING",
+                    "reason": reason, "cpus": 1, "nodes": 1, "user": "alice",
+                    "account": "physics", "qos": "normal", "submit_time": None,
+                    "pending_age": None, "elapsed": 0}
+                   for index, reason in enumerate(
+                       ["Dependency", "DependencyNeverSatisfied", "JobHeldUser",
+                        "BeginTime", "Licenses", "Reservation", "Priority"])]
+        summary = collector.summarise_jobs(waiting, None)
+        self.assertEqual(summary["pending"], 7)
+        self.assertEqual(summary["pending_limited"], 0)
+
+    def test_limit_reasons_are_counted_as_blocked(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        limited = [{"id": str(index), "partition": "compute", "state": "PENDING",
+                    "reason": reason, "cpus": 1, "nodes": 1, "user": "alice",
+                    "account": "physics", "qos": "normal", "submit_time": None,
+                    "pending_age": None, "elapsed": 0}
+                   for index, reason in enumerate(
+                       ["QOSMaxCpuPerUserLimit", "AssocGrpCpuLimit", "PartitionNodeLimit",
+                        "SomethingUnrecognised"])]
+        summary = collector.summarise_jobs(limited, None)
+        self.assertEqual(summary["pending_limited"], 4)
+
     def test_job_ages_use_submit_time(self):
         collector = sz.SlurmCollector(bin_dir=FAKEBIN)
         collector.now = FIXTURE_NOW

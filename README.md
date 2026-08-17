@@ -206,7 +206,7 @@ node-down/partition-down trigger for the same reason.
 | Slurm: Cluster CPU allocation is above {$SLURM.CPU.UTIL.HIGH}% | Info |
 | Slurm: Job backlog is above {$SLURM.JOBS.PENDING.MAX} jobs | Warning |
 | Slurm: Jobs are waiting longer than {$SLURM.JOBS.PENDING.AGE.MAX} | Warning |
-| Slurm: Jobs are blocked while the cluster has free CPUs | Warning |
+| Slurm: Jobs are blocked by a limit while the cluster has free CPUs | Warning |
 | Slurm: Job table usage is above {$SLURM.JOBS.USAGE.HIGH}% | Average |
 | Slurm: Main scheduling cycle is slow | Warning |
 | Slurm: Backfill scheduling cycle is slow | Warning |
@@ -242,10 +242,12 @@ Discovered entities:
 Two of these are worth calling out because they answer questions raw utilisation
 graphs cannot:
 
-* **Jobs are blocked while the cluster has free CPUs** — jobs are queueing, CPUs
-  are idle, and *no* job is waiting for resources. That combination means a QOS,
-  association or partition limit is holding the queue back, not a lack of
-  hardware.
+* **Jobs are blocked by a limit while the cluster has free CPUs** — jobs are held
+  back by a QOS, association or partition limit, CPUs are idle, and *no* job is
+  waiting for resources. That combination means a limit is holding the queue
+  back, not a lack of hardware. Jobs waiting on a dependency, a licence, a
+  reservation or a hold are excluded: they are waiting for something
+  identifiable and cannot start however much capacity is free.
 * **Cluster CPU allocation is above 95%** is deliberately *Info*: a full cluster
   is a healthy cluster. It exists to correlate with queue growth, not to page
   anyone.
@@ -263,6 +265,8 @@ meaningful.
 ## Dashboards
 
 One template dashboard with four pages:
+
+The slideshow is off by default, so a page stays put while you read it.
 
 1. **Cluster** — node availability, CPU and GPU allocation, running and pending
    jobs as value widgets, then nodes by state, jobs by state, CPU allocation,
