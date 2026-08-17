@@ -138,6 +138,18 @@ PENDING_REASON_KEYS = [name for name, _ in PENDING_REASON_BUCKETS] + ["other"]
 # cluster has idle CPUs.
 LIMIT_REASON_BUCKETS = ("qos_limit", "association_limit", "partition", "other")
 
+# Reasons that mean the scheduler could not start the job even with the whole
+# cluster free: it is waiting for another job, for a hold to be lifted, for a
+# start time to arrive, or for a reservation window.  Time spent that way is not
+# queue wait, so it is left out of the wait metrics; a job held for a week would
+# otherwise report a week of "waiting" on a cluster that is running perfectly.
+UNSCHEDULABLE_REASON_BUCKETS = ("dependency", "held", "reservation")
+
+
+def is_schedulable(reason):
+    """True when the job is waiting on the cluster rather than on something else."""
+    return classify_pending_reason(reason) not in UNSCHEDULABLE_REASON_BUCKETS
+
 # ---------------------------------------------------------------------------
 # Generic parsing helpers
 # ---------------------------------------------------------------------------
@@ -1039,7 +1051,7 @@ class SlurmCollector(object):
                 summary["pending_" + classify_pending_reason(job["reason"])] += 1
                 reason = job["reason"] if job["reason"] not in _NULL_VALUES else "unknown"
                 reason_counter[reason] = reason_counter.get(reason, 0) + 1
-                if job["pending_age"] is not None:
+                if job["pending_age"] is not None and is_schedulable(job["reason"]):
                     pending_ages.append(job["pending_age"])
                 if "_" in job["id"] or "[" in job["id"]:
                     summary["array_pending"] += 1
@@ -1130,7 +1142,8 @@ class SlurmCollector(object):
                 elif job["state"] == "PENDING":
                     partition["jobs_pending"] += 1
                     partition["cpus_pending"] += job["cpus"]
-                    if job["pending_age"] and job["pending_age"] > partition["oldest_pending_age"]:
+                    if (job["pending_age"] and is_schedulable(job["reason"]) and
+                            job["pending_age"] > partition["oldest_pending_age"]):
                         partition["oldest_pending_age"] = job["pending_age"]
 
         for partition in partitions:

@@ -2027,7 +2027,9 @@ Every accounting metric depends on this item, so enabling it here switches the w
                     <trends>365d</trends>
                     <value_type>UNSIGNED</value_type>
                     <units>s</units>
-                    <description>Time the longest waiting job has spent in the queue.</description>
+                    <description>Time the longest waiting job has spent in the queue.
+
+Counts only jobs the scheduler could start: jobs waiting on a dependency, on a hold or begin time, or on a reservation window are excluded, since they would report their whole wait even on a completely idle cluster.</description>
                     <preprocessing>
                         <step>
                             <type>JSONPATH</type>
@@ -2056,6 +2058,7 @@ Every accounting metric depends on this item, so enabling it here switches the w
                     <trends>365d</trends>
                     <value_type>UNSIGNED</value_type>
                     <units>s</units>
+                    <description>Mean queue wait, over the same schedulable jobs as the oldest pending job age.</description>
                     <preprocessing>
                         <step>
                             <type>JSONPATH</type>
@@ -4456,6 +4459,7 @@ Jobs waiting for resources, priority, a dependency, a license, a reservation or 
                             <trends>365d</trends>
                             <value_type>UNSIGNED</value_type>
                             <units>s</units>
+                            <description>Counts only jobs the scheduler could start: jobs waiting on a dependency, a hold or a reservation window are excluded.</description>
                             <preprocessing>
                                 <step>
                                     <type>JSONPATH</type>
@@ -4542,6 +4546,9 @@ Jobs waiting for resources, priority, a dependency, a license, a reservation or 
                             <name>Partition [{#PARTITION}]: Jobs wait longer than expected</name>
                             <opdata>Oldest: {ITEM.LASTVALUE1}</opdata>
                             <priority>WARNING</priority>
+                            <description>A job the scheduler could start has been queued in this partition for longer than expected. Jobs waiting on a dependency, a hold or a reservation window do not count.
+
+Partitions differ, so the threshold takes the partition name as macro context: {$SLURM.PARTITION.PENDING.AGE.MAX:"{#PARTITION}"}.</description>
                             <tags>
                                 <tag>
                                     <tag>scope</tag>
@@ -8566,7 +8573,9 @@ This deliberately does not depend on the node being down: it is the escalation f
             <name>Slurm: Jobs are waiting longer than {$SLURM.JOBS.PENDING.AGE.MAX}</name>
             <opdata>Oldest: {ITEM.LASTVALUE1}</opdata>
             <priority>WARNING</priority>
-            <description>At least one job has been queued for longer than the accepted waiting time.</description>
+            <description>At least one job the scheduler could start has been queued for longer than the accepted waiting time.
+
+Jobs waiting on a dependency, a hold or a reservation window do not count: they are waiting for something other than the cluster. If this fires on a genuinely busy cluster, raise {$SLURM.JOBS.PENDING.AGE.MAX} rather than muting it.</description>
             <dependencies>
                 <dependency>
                     <name>Slurm: slurmctld is not responding</name>

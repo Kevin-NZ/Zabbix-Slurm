@@ -389,6 +389,63 @@ class CollectorEndToEndTest(unittest.TestCase):
         walk(self.document, "$")
 
 
+class QueueWaitTest(unittest.TestCase):
+    """Queue wait must measure jobs the scheduler could actually start."""
+
+    def pending(self, reason, age, partition="compute"):
+        return {"id": "1", "partition": partition, "state": "PENDING", "reason": reason,
+                "cpus": 1, "nodes": 1, "user": "alice", "account": "physics",
+                "qos": "normal", "submit_time": FIXTURE_NOW - age,
+                "pending_age": age, "elapsed": 0}
+
+    def test_unschedulable_jobs_never_set_the_wait(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        for reason in ("Dependency", "DependencyNeverSatisfied", "JobHeldUser",
+                       "JobHeldAdmin", "BeginTime", "Reservation"):
+            summary = collector.summarise_jobs([self.pending(reason, 30 * 86400)], None)
+            self.assertEqual(summary["oldest_pending_age"], 0, reason)
+            self.assertEqual(summary["mean_pending_age"], 0, reason)
+
+    def test_schedulable_jobs_still_set_the_wait(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        for reason in ("Resources", "Priority", "QOSMaxCpuPerUserLimit",
+                       "AssocGrpCpuLimit", "Licenses", "PartitionNodeLimit"):
+            summary = collector.summarise_jobs([self.pending(reason, 3600)], None)
+            self.assertEqual(summary["oldest_pending_age"], 3600, reason)
+
+    def test_a_held_job_does_not_hide_a_real_wait(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        summary = collector.summarise_jobs(
+            [self.pending("Dependency", 30 * 86400), self.pending("Resources", 7200)], None)
+        self.assertEqual(summary["oldest_pending_age"], 7200)
+        self.assertEqual(summary["mean_pending_age"], 7200)
+        # The job itself is still counted in the queue and in its reason bucket.
+        self.assertEqual(summary["pending"], 2)
+        self.assertEqual(summary["pending_dependency"], 1)
+
+    def test_partition_wait_excludes_unschedulable_jobs(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        partitions = [{"name": "compute", "state": "UP", "state_code": 1, "default": 1,
+                       "hidden": 0, "max_time": "", "max_time_seconds": 0,
+                       "priority_tier": 0, "total_nodes_configured": 0,
+                       "total_cpus_configured": 0}]
+        merged = collector.merge_partitions(
+            partitions, [],
+            [self.pending("Dependency", 30 * 86400), self.pending("Resources", 900)])
+        self.assertEqual(merged[0]["oldest_pending_age"], 900)
+        self.assertEqual(merged[0]["jobs_pending"], 2)
+
+    def test_partition_wait_is_zero_when_everything_is_blocked(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        partitions = [{"name": "compute", "state": "UP", "state_code": 1, "default": 1,
+                       "hidden": 0, "max_time": "", "max_time_seconds": 0,
+                       "priority_tier": 0, "total_nodes_configured": 0,
+                       "total_cpus_configured": 0}]
+        merged = collector.merge_partitions(
+            partitions, [], [self.pending("Dependency", 30 * 86400)])
+        self.assertEqual(merged[0]["oldest_pending_age"], 0)
+
+
 class ReasonAnnotationTest(unittest.TestCase):
     def test_parses_user_and_timestamp(self):
         text, user, when = sz.parse_reason_annotation(

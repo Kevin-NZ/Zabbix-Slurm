@@ -38,6 +38,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* **Queue wait now measures only jobs the scheduler could start.** Both
+  *Slurm: Jobs are waiting longer than N* and *Partition [P]: Jobs wait longer
+  than expected* took the age of the oldest pending job, whatever it was waiting
+  for, so a single job blocked on a dependency, a hold, a begin time or a
+  reservation reported its whole wait as queue latency on an otherwise healthy
+  cluster. Those jobs are excluded from the oldest and mean pending age, at
+  cluster and partition level. They are still counted in the pending totals and
+  in their own reason buckets.
 * *Slurm: Jobs are blocked while the cluster has free CPUs* counted every
   pending job, so it fired whenever anything was waiting on a dependency — which
   no amount of free capacity can resolve. It now counts only jobs held back by a

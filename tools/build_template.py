@@ -522,9 +522,15 @@ CLUSTER_ITEMS = [
          component="jobs"),
     item("slurm.jobs.oldest_pending_age", "Slurm: Oldest pending job age",
          "$.jobs.oldest_pending_age", units="s", component="jobs",
-         description="Time the longest waiting job has spent in the queue."),
+         description="Time the longest waiting job has spent in the queue.\n\n"
+                     "Counts only jobs the scheduler could start: jobs waiting on a "
+                     "dependency, on a hold or begin time, or on a reservation window are "
+                     "excluded, since they would report their whole wait even on a "
+                     "completely idle cluster."),
     item("slurm.jobs.mean_pending_age", "Slurm: Mean pending job age",
-         "$.jobs.mean_pending_age", units="s", component="jobs"),
+         "$.jobs.mean_pending_age", units="s", component="jobs",
+         description="Mean queue wait, over the same schedulable jobs as the oldest "
+                     "pending job age."),
     item("slurm.jobs.longest_running_age", "Slurm: Longest running job",
          "$.jobs.longest_running_age", units="s", component="jobs"),
     item("slurm.jobs.array_pending", "Slurm: Pending array jobs", "$.jobs.array_pending",
@@ -739,7 +745,9 @@ PARTITION_ITEMS = [
              "Partition [{#PARTITION}]: CPUs requested by pending jobs", "cpus_pending"),
     lld_item("slurm.partition.jobs.oldest_pending[{#PARTITION}]",
              "Partition [{#PARTITION}]: Oldest pending job age", "oldest_pending_age",
-             units="s"),
+             units="s",
+             description="Counts only jobs the scheduler could start: jobs waiting on a "
+                         "dependency, a hold or a reservation window are excluded."),
 ]
 
 QOS_ITEMS = [
@@ -1142,8 +1150,12 @@ TRIGGERS = [
         "scope": "capacity",
         "opdata": "Oldest: {ITEM.LASTVALUE1}",
         "depends": [CTLD_DOWN, NO_DATA],
-        "description": "At least one job has been queued for longer than the accepted "
-                       "waiting time.",
+        "description": "At least one job the scheduler could start has been queued for "
+                       "longer than the accepted waiting time.\n\n"
+                       "Jobs waiting on a dependency, a hold or a reservation window do "
+                       "not count: they are waiting for something other than the cluster. "
+                       "If this fires on a genuinely busy cluster, raise "
+                       "{$SLURM.JOBS.PENDING.AGE.MAX} rather than muting it.",
     },
     {
         "id": "jobs-blocked",
@@ -1331,6 +1343,11 @@ PARTITION_TRIGGERS = [
         "priority": "WARNING",
         "scope": "capacity",
         "opdata": "Oldest: {ITEM.LASTVALUE1}",
+        "description": "A job the scheduler could start has been queued in this partition "
+                       "for longer than expected. Jobs waiting on a dependency, a hold or "
+                       "a reservation window do not count.\n\n"
+                       "Partitions differ, so the threshold takes the partition name as "
+                       "macro context: {$SLURM.PARTITION.PENDING.AGE.MAX:\"{#PARTITION}\"}.",
     },
     {
         "id": "partition-saturated",

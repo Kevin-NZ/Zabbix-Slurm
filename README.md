@@ -169,6 +169,12 @@ Per partition: state, node counts by state, availability, CPUs (total, allocated
 idle, unusable, %), memory, GPUs, jobs running/pending/total, CPUs requested by
 pending jobs, oldest pending job.
 
+Queue wait — the oldest and mean pending age, at cluster and partition level —
+counts only jobs the scheduler could actually start. Jobs waiting on a
+dependency, a hold or begin time, or a reservation window are excluded, since
+they would report their whole wait even on a completely idle cluster. They are
+still counted in the pending totals and in the pending reason breakdown.
+
 Per node: state and state code, availability, not responding, drain reason and
 who set it, how long the node has been out of service, CPUs, CPU allocation,
 load average, load per core, memory (total, allocated, free, %), temporary disk,
