@@ -2526,6 +2526,36 @@ Counts only jobs the scheduler could start: jobs waiting on a dependency, on a h
                     </tags>
                 </item>
                 <item>
+                    <uuid>b09ead15e9884b33a1668dd0df5ed880</uuid>
+                    <name>Slurm: Pending jobs - ready to run</name>
+                    <type>DEPENDENT</type>
+                    <key>slurm.jobs.pending.schedulable</key>
+                    <history>7d</history>
+                    <trends>365d</trends>
+                    <value_type>UNSIGNED</value_type>
+                    <description>Pending jobs the scheduler can actually consider starting, that is everything except jobs waiting on a dependency, on a hold or begin time, or on a reservation window.
+
+This is the number that says whether there is work for the scheduler to do: a queue made up entirely of dependencies gives the backfill scheduler nothing to backfill.</description>
+                    <preprocessing>
+                        <step>
+                            <type>JSONPATH</type>
+                            <parameters>
+                                <parameter>$.jobs.pending_schedulable</parameter>
+                            </parameters>
+                            <error_handler>DISCARD_VALUE</error_handler>
+                        </step>
+                    </preprocessing>
+                    <master_item>
+                        <key>slurm.cluster</key>
+                    </master_item>
+                    <tags>
+                        <tag>
+                            <tag>component</tag>
+                            <value>jobs</value>
+                        </tag>
+                    </tags>
+                </item>
+                <item>
                     <uuid>0f5325add18b4cf9ba66a93d81589a8f</uuid>
                     <name>Slurm: Pending jobs - blocked by a limit</name>
                     <type>DEPENDENT</type>
@@ -8693,13 +8723,13 @@ Jobs waiting on a dependency, a license, a reservation or a hold are excluded: t
         </trigger>
         <trigger>
             <uuid>8215987fb1274f109700badbc46fd13e</uuid>
-            <expression>min(/Slurm cluster by Zabbix agent/slurm.backfill.last_cycle_age,15m)&gt;{$SLURM.BACKFILL.AGE.MAX} and min(/Slurm cluster by Zabbix agent/slurm.jobs.pending,15m)&gt;0</expression>
+            <expression>min(/Slurm cluster by Zabbix agent/slurm.backfill.last_cycle_age,15m)&gt;{$SLURM.BACKFILL.AGE.MAX} and min(/Slurm cluster by Zabbix agent/slurm.jobs.pending.schedulable,15m)&gt;0</expression>
             <name>Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX}</name>
-            <opdata>Last cycle: {ITEM.LASTVALUE1}, pending: {ITEM.LASTVALUE2}</opdata>
+            <opdata>Last cycle: {ITEM.LASTVALUE1}, ready to run: {ITEM.LASTVALUE2}</opdata>
             <priority>WARNING</priority>
-            <description>No backfill cycle completed recently while jobs were queueing, so small jobs are no longer being started ahead of large ones.
+            <description>No backfill cycle completed recently while jobs were waiting to execute, so small jobs are no longer being started ahead of large ones.
 
-The queue has to have been continuously non-empty for the last 15 minutes: on an idle cluster the backfill scheduler has nothing to do and the age of its last cycle grows by itself, which is normal and not worth an alert.</description>
+Jobs that are ready to run have to have been present for the last 15 minutes. A queue made up of jobs waiting on a dependency, a hold or a reservation gives the backfill scheduler nothing to do, so the age of its last cycle grows by itself, which is normal and not worth an alert.</description>
             <dependencies>
                 <dependency>
                     <name>Slurm: slurmctld is not responding</name>

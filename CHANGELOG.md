@@ -56,11 +56,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * The template dashboard no longer starts its slideshow automatically. Zabbix
   does that by default on a multi-page dashboard, rotating the page away while
   somebody is reading it.
-* *Slurm: Backfill scheduler has not run for N* now also requires pending jobs.
-  The backfill scheduler only runs when there is something to backfill, so on an
-  idle cluster the age of its last cycle grows by itself and the trigger fired
-  on a perfectly healthy system. The queue has to have been continuously
-  non-empty for 15 minutes for the alert to mean anything.
+* *Slurm: Backfill scheduler has not run for N* now requires jobs that are
+  actually ready to run. The backfill scheduler only runs when there is
+  something to backfill, so the age of its last cycle grows by itself whenever
+  nothing can be started — including on a queue made up entirely of jobs waiting
+  on a dependency, a hold or a reservation. Guarding on the raw pending count
+  was not enough; the trigger now uses the new item *Pending jobs - ready to
+  run*, which excludes those.
 * `--refresh` no longer prints the document when a mode is given explicitly. It
   exists to warm the cache from the systemd timer, where the output only filled
   the journal; use `--no-cache` to force a collection and see the result.

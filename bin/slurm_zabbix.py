@@ -1071,6 +1071,8 @@ class SlurmCollector(object):
 
         summary["pending_limited"] = sum(summary["pending_" + bucket]
                                          for bucket in LIMIT_REASON_BUCKETS)
+        summary["pending_schedulable"] = summary["pending"] - sum(
+            summary["pending_" + bucket] for bucket in UNSCHEDULABLE_REASON_BUCKETS)
         summary["users_active"] = len(users)
         summary["accounts_active"] = len(accounts)
         if pending_ages:

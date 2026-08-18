@@ -575,6 +575,14 @@ CLUSTER_ITEMS = [
                      "time, or limited by an array task limit."),
     item("slurm.jobs.pending.other", "Slurm: Pending jobs - other reasons",
          "$.jobs.pending_other", component="jobs"),
+    item("slurm.jobs.pending.schedulable", "Slurm: Pending jobs - ready to run",
+         "$.jobs.pending_schedulable", component="jobs",
+         description="Pending jobs the scheduler can actually consider starting, that is "
+                     "everything except jobs waiting on a dependency, on a hold or begin "
+                     "time, or on a reservation window.\n\n"
+                     "This is the number that says whether there is work for the "
+                     "scheduler to do: a queue made up entirely of dependencies gives the "
+                     "backfill scheduler nothing to backfill."),
     item("slurm.jobs.pending.limited", "Slurm: Pending jobs - blocked by a limit",
          "$.jobs.pending_limited", component="jobs",
          description="Pending jobs held back by a QOS, association or partition limit, or "
@@ -1218,21 +1226,24 @@ TRIGGERS = [
         "id": "backfill-stalled",
         "name": "Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX}",
         # The backfill scheduler only runs when there is something to backfill,
-        # so the age of the last cycle grows on its own whenever the queue is
-        # empty.  Without pending jobs there is nothing to alert about.
+        # so the age of the last cycle grows on its own whenever nothing is
+        # waiting to execute.  Jobs blocked on a dependency, a hold or a
+        # reservation do not give it anything to do, so they must not count.
         "expression": (expr("slurm.backfill.last_cycle_age", "min", "15m",
                             ">{$SLURM.BACKFILL.AGE.MAX}") + " and " +
-                       expr("slurm.jobs.pending", "min", "15m", ">0")),
+                       expr("slurm.jobs.pending.schedulable", "min", "15m", ">0")),
         "priority": "WARNING",
         "scope": "performance",
-        "opdata": "Last cycle: {ITEM.LASTVALUE1}, pending: {ITEM.LASTVALUE2}",
+        "opdata": "Last cycle: {ITEM.LASTVALUE1}, ready to run: {ITEM.LASTVALUE2}",
         "depends": [CTLD_DOWN, NO_DATA],
-        "description": "No backfill cycle completed recently while jobs were queueing, so "
-                       "small jobs are no longer being started ahead of large ones.\n\n"
-                       "The queue has to have been continuously non-empty for the last 15 "
-                       "minutes: on an idle cluster the backfill scheduler has nothing to "
-                       "do and the age of its last cycle grows by itself, which is normal "
-                       "and not worth an alert.",
+        "description": "No backfill cycle completed recently while jobs were waiting to "
+                       "execute, so small jobs are no longer being started ahead of large "
+                       "ones.\n\n"
+                       "Jobs that are ready to run have to have been present for the last "
+                       "15 minutes. A queue made up of jobs waiting on a dependency, a "
+                       "hold or a reservation gives the backfill scheduler nothing to do, "
+                       "so the age of its last cycle grows by itself, which is normal and "
+                       "not worth an alert.",
     },
     {
         "id": "job-failure-rate",

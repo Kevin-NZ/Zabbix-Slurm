@@ -166,11 +166,12 @@ class ShippedTemplateTest(TemplateTestCase):
         self.assertTrue(any("length(last(/" in expression for expression in expressions),
                         "expected at least one length(last(...)) expression")
 
-    def test_idle_cluster_triggers_are_guarded_by_a_queue(self):
-        """Metrics that only move when work is queued must check for pending jobs.
+    def test_idle_cluster_triggers_are_guarded_by_runnable_work(self):
+        """The backfill scheduler only runs when something can actually be run.
 
-        The backfill scheduler does not run when there is nothing to backfill,
-        so the age of its last cycle grows by itself on an idle cluster.
+        Guarding on the raw pending count is not enough: a queue made up of
+        dependency-blocked jobs gives the backfill scheduler nothing to do, so
+        the age of its last cycle grows while the cluster is perfectly healthy.
         """
         tree = ET.parse(TEMPLATE)
         trigger = self.find(
@@ -179,8 +180,10 @@ class ShippedTemplateTest(TemplateTestCase):
                 "Slurm: Backfill scheduler has not run"))
         expression = trigger.find("expression").text
         self.assertIn("slurm.backfill.last_cycle_age", expression)
-        self.assertIn("slurm.jobs.pending", expression)
-        self.assertRegex(expression, r"min\(/[^)]*slurm\.jobs\.pending,[^)]*\)>0")
+        self.assertRegex(expression,
+                         r"min\(/[^)]*slurm\.jobs\.pending\.schedulable,[^)]*\)>0")
+        # The raw pending count would include jobs that can never be backfilled.
+        self.assertNotRegex(expression, r"slurm\.jobs\.pending,")
 
     def test_blocked_jobs_trigger_ignores_legitimately_waiting_jobs(self):
         """Dependencies, holds, licences and reservations are not "blocked"."""

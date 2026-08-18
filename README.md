@@ -149,6 +149,7 @@ never slows down the one minute cluster poll.
 | GPU | total, allocated, idle, allocation % (from `gres/gpu` in the node TRES) |
 | Jobs | running, pending, suspended, completing, configuring, other, CPUs requested by running and pending jobs, active users and accounts, oldest and mean queue wait, longest running job, MaxJobCount and job table usage |
 | Pending reasons | resources, priority, dependency, QOS limit, association limit, licenses, reservation, partition, nodes unavailable, held, other, plus the five most frequent raw reasons as text |
+| Queue shape | jobs ready to run (excluding dependency, hold and reservation waits) and jobs blocked by a limit |
 | Scheduler (`sdiag`) | controller thread count, agent queue, DBD agent queue, submission/start/completion/cancellation/failure rates, main cycle last/mean/max, cycles per minute, queue length, mean depth |
 | Backfill | cycle last/mean/max, mean and last depth, queue length, backfilled job rate, time since the last cycle |
 | Reservations | total, active, nodes reserved |
@@ -216,7 +217,7 @@ node-down/partition-down trigger for the same reason.
 | Slurm: Job table usage is above {$SLURM.JOBS.USAGE.HIGH}% | Average |
 | Slurm: Main scheduling cycle is slow | Warning |
 | Slurm: Backfill scheduling cycle is slow | Warning |
-| Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX} (with jobs queued) | Warning |
+| Slurm: Backfill scheduler has not run for {$SLURM.BACKFILL.AGE.MAX} (with jobs ready to run) | Warning |
 | Slurm: A node has been out of service for more than {$SLURM.NODE.UNAVAILABLE.AGE.MAX} | Warning |
 | Slurm: Job failure rate is above {$SLURM.ACCOUNTING.FAILURE.RATE.MAX}% | Warning (needs accounting) |
 | Slurm: Jobs are being killed by node failures | Average (needs accounting) |

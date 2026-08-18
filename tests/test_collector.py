@@ -413,6 +413,36 @@ class QueueWaitTest(unittest.TestCase):
             summary = collector.summarise_jobs([self.pending(reason, 3600)], None)
             self.assertEqual(summary["oldest_pending_age"], 3600, reason)
 
+    def test_a_queue_of_dependencies_has_nothing_ready_to_run(self):
+        """The backfill scheduler has nothing to do with such a queue."""
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        blocked = [self.pending(reason, 600) for reason in
+                   ("Dependency", "DependencyNeverSatisfied", "JobHeldAdmin",
+                    "BeginTime", "Reservation")]
+        summary = collector.summarise_jobs(blocked, None)
+        self.assertEqual(summary["pending"], 5)
+        self.assertEqual(summary["pending_schedulable"], 0)
+
+    def test_runnable_jobs_are_counted_as_ready(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        queue = [self.pending("Resources", 600), self.pending("Priority", 600),
+                 self.pending("QOSMaxCpuPerUserLimit", 600),
+                 self.pending("Dependency", 600)]
+        summary = collector.summarise_jobs(queue, None)
+        self.assertEqual(summary["pending"], 4)
+        self.assertEqual(summary["pending_schedulable"], 3)
+
+    def test_schedulable_and_unschedulable_always_add_up(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        queue = [self.pending(reason, 600) for reason in
+                 ("Resources", "Priority", "Dependency", "JobHeldUser", "Reservation",
+                  "Licenses", "AssocGrpCpuLimit", "SomethingNew")]
+        summary = collector.summarise_jobs(queue, None)
+        unschedulable = sum(summary["pending_" + bucket]
+                            for bucket in sz.UNSCHEDULABLE_REASON_BUCKETS)
+        self.assertEqual(summary["pending_schedulable"] + unschedulable,
+                         summary["pending"])
+
     def test_a_held_job_does_not_hide_a_real_wait(self):
         collector = sz.SlurmCollector(bin_dir=FAKEBIN)
         summary = collector.summarise_jobs(
