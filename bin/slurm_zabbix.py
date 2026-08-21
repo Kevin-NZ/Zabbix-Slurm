@@ -161,7 +161,8 @@ _KV_RE = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_/.\-]*)=(?P<val>.*?)(?=\s+[A-Z
 
 _NULL_VALUES = frozenset(["", "N/A", "n/a", "(null)", "None", "NONE", "Unknown", "UNKNOWN", "unknown"])
 
-_TRES_RE = re.compile(r"([A-Za-z0-9_/]+)=([0-9.]+)([KMGTP]?)")
+# Typed GRES appears in TRES as "gres/gpu:a100=3", so ':' belongs to the name.
+_TRES_RE = re.compile(r"([A-Za-z0-9_/:]+)=([0-9.]+)([KMGTP]?)")
 
 _SIZE_MULTIPLIERS = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4, "P": 1024 ** 5}
 
@@ -227,6 +228,18 @@ def parse_gres(value):
             key = "%s:%s" % (name, kind)
             result[key] = result.get(key, 0) + count
     return result
+
+
+def tres_gpu_count(tres):
+    """GPUs in a parsed TRES mapping.
+
+    A cluster may track the generic ``gres/gpu``, only the typed
+    ``gres/gpu:a100`` entries, or neither.
+    """
+    if "gres/gpu" in tres:
+        return int(tres["gres/gpu"])
+    return int(sum(count for name, count in tres.items()
+                   if name.startswith("gres/gpu:")))
 
 
 def parse_tres(value):
@@ -540,8 +553,12 @@ class SlurmCollector(object):
         # are always populated, so they are the fallback.
         configured_gres = parse_gres(record.get("Gres", ""))
         used_gres = parse_gres(record.get("GresUsed", ""))
-        gpus_total = int(cfg_tres.get("gres/gpu", configured_gres.get("gpu", 0)))
-        gpus_alloc = int(alloc_tres.get("gres/gpu", used_gres.get("gpu", 0)))
+        # Slurm describes GPUs twice and either description can be absent or
+        # zero depending on the release and on AccountingStorageTRES, so both
+        # are read and the larger is kept.  Preferring one source meant a zero
+        # from it hid a correct count in the other.
+        gpus_total = max(tres_gpu_count(cfg_tres), configured_gres.get("gpu", 0))
+        gpus_alloc = max(tres_gpu_count(alloc_tres), used_gres.get("gpu", 0))
         gpu_types = ",".join(sorted(key.split(":", 1)[1] for key in configured_gres
                                     if key.startswith("gpu:")))
 
@@ -1566,11 +1583,62 @@ def build_parser():
                         help="directory holding the Slurm client commands")
     parser.add_argument("--no-sacctmgr", action="store_true",
                         help="skip slurmdbd/QOS queries on clusters without accounting")
+    parser.add_argument("--explain-node", metavar="NODE",
+                        help="show how one node's GPU numbers were derived from the "
+                             "Slurm output, and exit")
     parser.add_argument("--pretty", action="store_true", help="indent the JSON output")
     parser.add_argument("--strict", action="store_true",
                         help="exit non-zero when collection reported errors")
     parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
     return parser
+
+
+GRES_FIELDS = ("Gres", "GresUsed", "GresDrain", "CfgTRES", "AllocTRES")
+
+
+def explain_node(collector, wanted):
+    """Print how one node's GPU numbers were derived.
+
+    Slurm describes GRES differently between releases and configurations, so
+    when the numbers look wrong this shows the raw fields next to what the
+    collector made of them.
+    """
+    output = collector.run(["scontrol", "show", "node", wanted])
+    if output is None:
+        print("could not read node %r: %s" % (wanted, "; ".join(collector.errors)))
+        return 1
+
+    record = parse_kv_line(" ".join(output.split("\n")))
+    if not record.get("NodeName"):
+        print("no node record in the output for %r" % wanted)
+        return 1
+
+    print("node: %s" % record.get("NodeName"))
+    print("\nraw fields:")
+    for field in GRES_FIELDS:
+        print("  %-10s = %s" % (field, record.get(field, "(field not present)")))
+
+    print("\nparsed:")
+    print("  Gres       -> %s" % json.dumps(parse_gres(record.get("Gres", "")),
+                                            sort_keys=True))
+    print("  GresUsed   -> %s" % json.dumps(parse_gres(record.get("GresUsed", "")),
+                                            sort_keys=True))
+    configured = parse_tres(record.get("CfgTRES", ""))
+    allocated = parse_tres(record.get("AllocTRES", ""))
+    print("  CfgTRES    -> gpus=%d" % tres_gpu_count(configured))
+    print("  AllocTRES  -> gpus=%d" % tres_gpu_count(allocated))
+
+    node = collector._build_node(record)
+    print("\nderived:")
+    for field in ("gpus_total", "gpus_allocated", "gpus_idle", "gpu_utilization",
+                  "gpu_type"):
+        print("  %-16s = %s" % (field, node.get(field)))
+
+    if node.get("gpus_total") and not node.get("gpus_allocated"):
+        print("\nNo GPUs look allocated. If jobs are using this node's GPUs, the "
+              "raw fields above are the ones to report:\n"
+              "  https://github.com/Kevin-NZ/Zabbix-Slurm/issues")
+    return 0
 
 
 def accounting_cache_file(cache_file):
@@ -1581,6 +1649,11 @@ def accounting_cache_file(cache_file):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     now = int(time.time())
+
+    if args.explain_node:
+        return explain_node(
+            SlurmCollector(bin_dir=args.slurm_bin_dir, timeout=args.timeout),
+            args.explain_node)
 
     accounting = args.mode == "accounting"
     cache_file = accounting_cache_file(args.cache_file) if accounting else args.cache_file

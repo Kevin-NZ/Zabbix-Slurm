@@ -408,6 +408,19 @@ The cluster has no accounting database, or `sacctmgr` is not usable by the
 `zabbix` user. Add `--no-sacctmgr` to the UserParameters and disable the
 *slurmdbd is not reachable* trigger.
 
+**GPU totals or allocation read zero**
+Slurm describes GPUs in two places — the `Gres`/`GresUsed` fields and the
+`CfgTRES`/`AllocTRES` fields — and which of them is populated depends on the
+release and on `AccountingStorageTRES`. The collector reads both and keeps the
+larger. To see what your cluster reports for one node:
+
+```sh
+/usr/local/bin/slurm_zabbix.py --explain-node gpu001
+```
+
+That prints the raw fields next to the derived numbers. If GPUs are in use but
+the derived allocation is 0, the raw fields are the thing to report.
+
 **Node items show "no data" for some nodes**
 Values Slurm does not report (the load average of a down node, for instance) are
 omitted from the JSON on purpose, so the matching item keeps its last value

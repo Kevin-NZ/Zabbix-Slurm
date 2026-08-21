@@ -77,6 +77,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+* **GPU allocation could still read zero after the Gres fix.** Two remaining
+  gaps: typed GRES in the TRES fields (`gres/gpu:a100=3`) was mis-parsed because
+  `:` was not allowed in a TRES name, and a source that reported the key with a
+  zero value suppressed the fallback to the other one. Totals and allocation are
+  now taken as the larger of the TRES and Gres/GresUsed readings, so whichever
+  source a release and configuration populates is the one that counts. New
+  `--explain-node NODE` prints the raw GRES fields beside the derived numbers,
+  for when a cluster reports them in a shape not seen before.
 * **GPUs were reported as zero on most clusters.** GPU counts were read only
   from the `CfgTRES`/`AllocTRES` fields, but `gres/gpu` appears there only when
   the cluster lists it in `AccountingStorageTRES`, which is not the default. The

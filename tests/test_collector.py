@@ -475,11 +475,79 @@ class GpuAccountingTest(unittest.TestCase):
         self.assertEqual(nodes["g001"]["gpus_allocated"], 3)
         self.assertEqual(nodes["g001"]["gpu_type"], "a100")
 
+    def test_typed_only_tres_is_understood(self):
+        """Some clusters track gres/gpu:a100 without the generic gres/gpu."""
+        tres = sz.parse_tres("cpu=64,mem=1030000M,billing=64,gres/gpu:a100=3")
+        self.assertEqual(tres["gres/gpu:a100"], 3)
+        self.assertEqual(sz.tres_gpu_count(tres), 3)
+
+    def test_generic_tres_wins_over_typed_entries(self):
+        """Both are listed together; counting both would double the GPUs."""
+        tres = sz.parse_tres("gres/gpu=4,gres/gpu:a100=4")
+        self.assertEqual(sz.tres_gpu_count(tres), 4)
+
+    def test_a_zero_in_one_source_does_not_hide_the_other(self):
+        line = ("NodeName=z1 CPUTot=8 CPUAlloc=0 RealMemory=1000 AllocMem=0 State=MIXED "
+                "Partitions=gpu Gres=gpu:a100:4 GresUsed=gpu:a100:2 "
+                "CfgTRES=cpu=8,mem=1000M,gres/gpu=4 AllocTRES=cpu=0,mem=0,gres/gpu=0")
+        node = self.node(line)
+        self.assertEqual(node["gpus_total"], 4)
+        self.assertEqual(node["gpus_allocated"], 2)
+
+    def test_gpus_found_when_only_tres_reports_them(self):
+        """Older releases may not print GresUsed at all."""
+        line = ("NodeName=z2 CPUTot=8 CPUAlloc=8 RealMemory=1000 AllocMem=1000 "
+                "State=ALLOCATED Partitions=gpu Gres=gpu:2 "
+                "CfgTRES=cpu=8,mem=1000M,gres/gpu=2 AllocTRES=cpu=8,mem=1000M,gres/gpu=2")
+        node = self.node(line)
+        self.assertEqual(node["gpus_total"], 2)
+        self.assertEqual(node["gpus_allocated"], 2)
+        self.assertAlmostEqual(node["gpu_utilization"], 100.0)
+
+    def test_typed_only_tres_end_to_end(self):
+        line = ("NodeName=z3 CPUTot=8 CPUAlloc=4 RealMemory=1000 AllocMem=500 State=MIXED "
+                "Partitions=gpu Gres=(null) "
+                "CfgTRES=cpu=8,mem=1000M,gres/gpu:v100=4 "
+                "AllocTRES=cpu=4,mem=500M,gres/gpu:v100=1")
+        node = self.node(line)
+        self.assertEqual(node["gpus_total"], 4)
+        self.assertEqual(node["gpus_allocated"], 1)
+
     def test_nodes_without_gpus_report_zero(self):
         collector = sz.SlurmCollector(bin_dir=FAKEBIN)
         nodes = dict((node["name"], node) for node in collector.collect_nodes())
         self.assertEqual(nodes["n001"]["gpus_total"], 0)
         self.assertEqual(nodes["n001"]["gpu_type"], "")
+
+
+class ExplainNodeTest(unittest.TestCase):
+    """The diagnostic has to show the raw fields, not just the conclusion."""
+
+    def run_explain(self, node):
+        process = subprocess.Popen(
+            [sys.executable, COLLECTOR, "--slurm-bin-dir", FAKEBIN, "--explain-node", node],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        stdout, stderr = process.communicate()
+        return process.returncode, stdout, stderr
+
+    def test_reports_raw_fields_and_derived_values(self):
+        code, stdout, stderr = self.run_explain("gpu01")
+        self.assertEqual(code, 0, stderr)
+        for expected in ("Gres", "GresUsed", "CfgTRES", "AllocTRES",
+                         "gpu:a100:8(S:0-1)", "gpu:a100:5(IDX:0-4)",
+                         "gpus_total", "gpus_allocated"):
+            self.assertIn(expected, stdout)
+        self.assertIn("62.5", stdout)
+
+    def test_marks_a_field_that_is_absent(self):
+        code, stdout, _ = self.run_explain("gpu01")
+        self.assertEqual(code, 0)
+        self.assertIn("field not present", stdout)
+
+    def test_unknown_node(self):
+        code, stdout, _ = self.run_explain("does-not-exist")
+        self.assertEqual(code, 1)
+        self.assertIn("no node record", stdout)
 
 
 class QueueWaitTest(unittest.TestCase):
