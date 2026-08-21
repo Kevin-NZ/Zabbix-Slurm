@@ -520,6 +520,66 @@ class GpuAccountingTest(unittest.TestCase):
         self.assertEqual(nodes["n001"]["gpu_type"], "")
 
 
+class NoGresUsedFieldTest(unittest.TestCase):
+    """A cluster whose scontrol prints no GresUsed field at all.
+
+    Recorded from a Slurm 22.05 cluster where the GPU metrics read zero: the
+    node has Gres=gpu:a100:1, no GresUsed field, and no gres/gpu in TRES, while
+    sinfo reports the GPU as allocated.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        with open(os.path.join(HERE, "fixtures",
+                               "scontrol_show_node_no_gresused.txt")) as handle:
+            built = [collector._build_node(sz.parse_kv_line(line))
+                     for line in handle if line.strip()]
+        cls.raw = dict((node["name"], dict(node)) for node in built)
+        cls.nodes = dict((node["name"], node) for node in
+                         collector.fill_gpu_allocation(built))
+
+    def test_scontrol_alone_cannot_answer(self):
+        for name in ("aklppg31", "aklppg32", "wkoppg31"):
+            self.assertFalse(self.raw[name]["_gpu_alloc_known"], name)
+            self.assertEqual(self.raw[name]["gpus_allocated"], 0, name)
+
+    def test_totals_still_come_from_gres(self):
+        self.assertEqual(self.nodes["aklppg32"]["gpus_total"], 1)
+        self.assertEqual(self.nodes["aklppg32"]["gpu_type"], "a100")
+
+    def test_sinfo_supplies_the_allocation(self):
+        self.assertEqual(self.nodes["aklppg32"]["gpus_allocated"], 1)
+        self.assertEqual(self.nodes["aklppg32"]["gpus_idle"], 0)
+        self.assertAlmostEqual(self.nodes["aklppg32"]["gpu_utilization"], 100.0)
+        self.assertEqual(self.nodes["aklppg31"]["gpus_allocated"], 1)
+
+    def test_idle_gpu_node_stays_idle(self):
+        self.assertEqual(self.nodes["wkoppg31"]["gpus_total"], 1)
+        self.assertEqual(self.nodes["wkoppg31"]["gpus_allocated"], 0)
+
+    def test_non_gpu_nodes_are_untouched(self):
+        self.assertEqual(self.nodes["aklppb30"]["gpus_total"], 0)
+        self.assertEqual(self.nodes["aklppb30"]["gpus_allocated"], 0)
+
+    def test_cluster_totals(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        _, _, _, gpus = collector.summarise_nodes(list(self.nodes.values()))
+        self.assertEqual(gpus["total"], 3)        # two A100s and one V100
+        self.assertEqual(gpus["allocated"], 2)    # both A100s in use
+        self.assertAlmostEqual(gpus["utilization"], 66.6667, places=3)
+
+    def test_the_marker_never_reaches_the_output(self):
+        for node in self.nodes.values():
+            self.assertNotIn("_gpu_alloc_known", node)
+
+    def test_repeated_sinfo_rows_are_not_added_up(self):
+        """sinfo prints a node once per partition it belongs to."""
+        used = sz.SlurmCollector(bin_dir=FAKEBIN).collect_gres_used()
+        self.assertEqual(used["aklppg32"], 1)
+        self.assertEqual(used["aklppb30"], 0)
+
+
 class GresUsedFallbackTest(unittest.TestCase):
     """Some Slurm releases never print GresUsed in scontrol show node."""
 

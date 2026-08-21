@@ -528,29 +528,33 @@ class SlurmCollector(object):
 
         Not every Slurm release prints GresUsed in ``scontrol show node``, and
         gres/gpu is only in the TRES fields when the cluster asks for it, so a
-        cluster can end up reporting GPUs that are never allocated.  sinfo
-        exposes the same figure through its GresUsed format field, so when the
-        whole cluster claims zero allocated GPUs it is worth a second look.
+        cluster can end up reporting GPUs that look permanently idle.  sinfo
+        exposes the same figure through its GresUsed format field.
 
-        The query only runs in that situation, which means it costs nothing on
-        clusters where scontrol already answers, and one extra command while
-        every GPU genuinely is idle.
+        The query runs only when scontrol answered nothing about GPU use on a
+        node that has GPUs, which is a property of the release and the
+        configuration rather than of the current load.  Clusters where scontrol
+        answers never pay for it, and one where it does not pays one extra
+        command per collection whatever the GPUs are doing.
         """
-        with_gpus = [node for node in nodes if node["gpus_total"] > 0]
-        if not with_gpus or any(node["gpus_allocated"] for node in with_gpus):
+        unanswered = []
+        for node in nodes:
+            # The marker is dropped from every node, answered or not.
+            if not node.pop("_gpu_alloc_known", True) and node["gpus_total"] > 0:
+                unanswered.append(node)
+
+        if not unanswered:
             return nodes
 
         used = self.collect_gres_used()
         if not used:
             return nodes
 
-        for node in with_gpus:
-            allocated = used.get(node["name"], 0)
-            if not allocated:
-                continue
-            node["gpus_allocated"] = min(allocated, node["gpus_total"])
-            node["gpus_idle"] = max(node["gpus_total"] - node["gpus_allocated"], 0)
-            node["gpu_utilization"] = percent(node["gpus_allocated"], node["gpus_total"])
+        for node in unanswered:
+            allocated = min(used.get(node["name"], 0), node["gpus_total"])
+            node["gpus_allocated"] = allocated
+            node["gpus_idle"] = max(node["gpus_total"] - allocated, 0)
+            node["gpu_utilization"] = percent(allocated, node["gpus_total"])
         return nodes
 
     def collect_gres_used(self):
@@ -606,6 +610,12 @@ class SlurmCollector(object):
         # from it hid a correct count in the other.
         gpus_total = max(tres_gpu_count(cfg_tres), configured_gres.get("gpu", 0))
         gpus_alloc = max(tres_gpu_count(alloc_tres), used_gres.get("gpu", 0))
+        # Whether Slurm said anything at all about GPUs in use on this node.
+        # Several releases print no GresUsed field, and gres/gpu is only in the
+        # TRES fields when the cluster asks for it, in which case the node looks
+        # permanently idle and the figure has to come from sinfo instead.
+        gpu_alloc_known = bool(used_gres) or "gres/gpu" in alloc_tres or any(
+            name.startswith("gres/gpu:") for name in alloc_tres)
         gpu_types = ",".join(sorted(key.split(":", 1)[1] for key in configured_gres
                                     if key.startswith("gpu:")))
 
@@ -654,6 +664,8 @@ class SlurmCollector(object):
             "gpus_idle": max(gpus_total - gpus_alloc, 0),
             "gpu_utilization": percent(gpus_alloc, gpus_total),
             "gpu_type": gpu_types,
+            # Removed again by fill_gpu_allocation; never reaches the output.
+            "_gpu_alloc_known": gpu_alloc_known,
             "weight": to_int(record.get("Weight"), 0) or 0,
             "version": record.get("Version", ""),
             "reason": reason,
@@ -1676,14 +1688,19 @@ def explain_node(collector, wanted):
     print("  AllocTRES  -> gpus=%d" % tres_gpu_count(allocated))
 
     node = collector._build_node(record)
-    print("\nsinfo fallback (used when the whole cluster reports no allocated GPUs):")
+    answered = node.get("_gpu_alloc_known")
+    print("\nsinfo fallback (used when scontrol reports no GPU use for a node):")
+    print("  needed here: %s" % ("no, scontrol answered" if answered else "yes"))
     from_sinfo = collector.collect_gres_used()
     if not from_sinfo:
         print("  sinfo returned nothing usable")
     else:
         print("  GresUsed for this node -> %s" % from_sinfo.get(record["NodeName"], 0))
 
-    print("\nderived:")
+    # Run the same path collection uses, so this reports what Zabbix will see.
+    node = collector.fill_gpu_allocation([node])[0]
+
+    print("\nderived (as the collector reports it):")
     for field in ("gpus_total", "gpus_allocated", "gpus_idle", "gpu_utilization",
                   "gpu_type"):
         print("  %-16s = %s" % (field, node.get(field)))
