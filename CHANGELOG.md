@@ -77,6 +77,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+* **GPUs were reported as zero on most clusters.** GPU counts were read only
+  from the `CfgTRES`/`AllocTRES` fields, but `gres/gpu` appears there only when
+  the cluster lists it in `AccountingStorageTRES`, which is not the default. The
+  collector now falls back to the `Gres` and `GresUsed` fields, which are always
+  populated, and handles typed (`gpu:a100:4`), untyped (`gpu:4`), multi-type and
+  socket/index annotated forms, ignoring non-GPU resources such as `mps` and
+  `shard`. Clusters that do track `gres/gpu` in TRES keep using it. The GPU model
+  is now also exposed per node as *GPU type*.
 * **The template could not be imported.** Zabbix accepts version 4 UUIDs only
   and rejected the export with "UUIDv4 is expected", because the UUIDs were
   derived with `uuid5`. They are still derived from each object's path, so they

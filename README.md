@@ -146,7 +146,7 @@ never slows down the one minute cluster poll.
 | Nodes | total, idle, allocated, mixed, down, failed, drained, draining, maintenance, reserved, completing, planned, powered down, pending reboot, future, unknown, not responding, available, availability % |
 | CPU | total, allocated, idle, unusable, allocation % |
 | Memory | total, allocated, free, allocation % |
-| GPU | total, allocated, idle, allocation % (from `gres/gpu` in the node TRES) |
+| GPU | total, allocated, idle, allocation % |
 | Jobs | running, pending, suspended, completing, configuring, other, CPUs requested by running and pending jobs, active users and accounts, oldest and mean queue wait, longest running job, MaxJobCount and job table usage |
 | Pending reasons | resources, priority, dependency, QOS limit, association limit, licenses, reservation, partition, nodes unavailable, held, other, plus the five most frequent raw reasons as text |
 | Queue shape | jobs ready to run (excluding dependency, hold and reservation waits) and jobs blocked by a limit |
@@ -472,6 +472,14 @@ expectations.
   node still runs jobs but accepts no new ones. They are counted separately.
 * **A node in several partitions** is counted in each of them, which is why the
   sum of partition node counts can exceed the cluster node count.
+* **GPUs** are read from the node's `Gres` and `GresUsed` fields, so they are
+  reported whether or not the cluster lists `gres/gpu` in
+  `AccountingStorageTRES` — it is not there by default. Typed (`gpu:a100:4`),
+  untyped (`gpu:4`) and multi-type nodes all work, and non-GPU resources such as
+  `mps` and `shard` are ignored. Note this is *allocation*, not device
+  utilisation: it says how many GPUs Slurm has handed to jobs, not how busy the
+  silicon is. For the latter, monitor the nodes themselves (DCGM or
+  nvidia-smi).
 
 ## License
 

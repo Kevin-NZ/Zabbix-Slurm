@@ -389,6 +389,99 @@ class CollectorEndToEndTest(unittest.TestCase):
         walk(self.document, "$")
 
 
+class GresParsingTest(unittest.TestCase):
+    def test_typed_gres(self):
+        self.assertEqual(sz.parse_gres("gpu:a100:4"), {"gpu": 4, "gpu:a100": 4})
+
+    def test_untyped_gres(self):
+        self.assertEqual(sz.parse_gres("gpu:4"), {"gpu": 4})
+
+    def test_socket_and_index_suffixes_are_ignored(self):
+        self.assertEqual(sz.parse_gres("gpu:a100:4(S:0-1)"), {"gpu": 4, "gpu:a100": 4})
+        self.assertEqual(sz.parse_gres("gpu:a100:3(IDX:0-2)"), {"gpu": 3, "gpu:a100": 3})
+        self.assertEqual(sz.parse_gres("gpu:a100:0(IDX:N/A)"), {"gpu": 0, "gpu:a100": 0})
+
+    def test_several_types_on_one_node(self):
+        self.assertEqual(sz.parse_gres("gpu:a100:2(S:0-1),gpu:v100:2(S:0-1)"),
+                         {"gpu": 4, "gpu:a100": 2, "gpu:v100": 2})
+
+    def test_other_resources_are_kept_apart_from_gpus(self):
+        parsed = sz.parse_gres("gpu:a100:2,mps:200,shard:8")
+        self.assertEqual(parsed["gpu"], 2)
+        self.assertEqual(parsed["mps"], 200)
+        self.assertEqual(parsed["shard"], 8)
+
+    def test_empty_and_null(self):
+        self.assertEqual(sz.parse_gres(""), {})
+        self.assertEqual(sz.parse_gres("(null)"), {})
+
+
+class GpuAccountingTest(unittest.TestCase):
+    """GPUs must be reported whether or not the cluster tracks them in TRES."""
+
+    @staticmethod
+    def node(line):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        collector.now = FIXTURE_NOW
+        return collector._build_node(sz.parse_kv_line(line))
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(HERE, "fixtures",
+                               "scontrol_show_node_untracked_gres.txt")) as handle:
+            cls.untracked = dict((node["name"], node) for node in
+                                 (cls.node(line) for line in handle if line.strip()))
+
+    def test_gpus_are_found_without_gres_gpu_in_tres(self):
+        """AccountingStorageTRES does not include gres/gpu by default."""
+        gpu01 = self.untracked["gpu01"]
+        self.assertNotIn("gres/gpu", sz.parse_tres(
+            "cpu=64,mem=1030000M,billing=64"))  # what CfgTRES looks like there
+        self.assertEqual(gpu01["gpus_total"], 8)
+        self.assertEqual(gpu01["gpus_allocated"], 5)
+        self.assertEqual(gpu01["gpus_idle"], 3)
+        self.assertAlmostEqual(gpu01["gpu_utilization"], 62.5)
+        self.assertEqual(gpu01["gpu_type"], "a100")
+
+    def test_idle_gpu_node(self):
+        gpu02 = self.untracked["gpu02"]
+        self.assertEqual(gpu02["gpus_total"], 4)
+        self.assertEqual(gpu02["gpus_allocated"], 0)
+        self.assertEqual(gpu02["gpu_type"], "v100")
+
+    def test_node_with_two_gpu_types(self):
+        gpu03 = self.untracked["gpu03"]
+        self.assertEqual(gpu03["gpus_total"], 4)     # 2 A100 + 2 V100, mps ignored
+        self.assertEqual(gpu03["gpus_allocated"], 1)
+        self.assertEqual(gpu03["gpu_type"], "a100,v100")
+
+    def test_untyped_gres_node(self):
+        gpu04 = self.untracked["gpu04"]
+        self.assertEqual(gpu04["gpus_total"], 2)
+        self.assertEqual(gpu04["gpus_allocated"], 2)
+        self.assertEqual(gpu04["gpu_type"], "")
+
+    def test_a_mixed_cluster_reports_the_totals(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        _, _, _, gpus = collector.summarise_nodes(list(self.untracked.values()))
+        self.assertEqual(gpus["total"], 18)      # 8 + 4 + 4 + 2
+        self.assertEqual(gpus["allocated"], 8)   # 5 + 0 + 1 + 2
+        self.assertGreater(gpus["utilization"], 0)
+
+    def test_tres_is_still_used_when_the_cluster_tracks_gpus(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        nodes = dict((node["name"], node) for node in collector.collect_nodes())
+        self.assertEqual(nodes["g001"]["gpus_total"], 4)
+        self.assertEqual(nodes["g001"]["gpus_allocated"], 3)
+        self.assertEqual(nodes["g001"]["gpu_type"], "a100")
+
+    def test_nodes_without_gpus_report_zero(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        nodes = dict((node["name"], node) for node in collector.collect_nodes())
+        self.assertEqual(nodes["n001"]["gpus_total"], 0)
+        self.assertEqual(nodes["n001"]["gpu_type"], "")
+
+
 class QueueWaitTest(unittest.TestCase):
     """Queue wait must measure jobs the scheduler could actually start."""
 

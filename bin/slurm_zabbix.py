@@ -195,6 +195,40 @@ def to_float(value, default=None):
         return default
 
 
+# Gres/GresUsed entries look like "gpu:4", "gpu:a100:4(S:0-1)" or
+# "gpu:a100:3(IDX:0-2)", comma separated, and may mention other resources such
+# as mps or shard.
+_GRES_RE = re.compile(
+    r"(?P<name>[A-Za-z][A-Za-z0-9_]*)"
+    r"(?::(?P<type>[A-Za-z0-9_.+\-]+))?"
+    r":(?P<count>\d+)"
+    r"(?:\([^)]*\))?")
+
+
+def parse_gres(value):
+    """Parse a Gres or GresUsed field into counts.
+
+    Returns the total per resource plus a per type breakdown, for example
+    ``{"gpu": 6, "gpu:a100": 4, "gpu:v100": 2}``.
+
+    Unlike the TRES fields, Gres and GresUsed are always populated, so this is
+    the only GPU source on clusters that do not list gres/gpu in
+    AccountingStorageTRES - which is the default.
+    """
+    result = {}
+    if not value or value in _NULL_VALUES:
+        return result
+    for match in _GRES_RE.finditer(value):
+        name = match.group("name").lower()
+        kind = (match.group("type") or "").lower()
+        count = int(match.group("count"))
+        result[name] = result.get(name, 0) + count
+        if kind:
+            key = "%s:%s" % (name, kind)
+            result[key] = result.get(key, 0) + count
+    return result
+
+
 def parse_tres(value):
     """Parse a TRES string such as ``cpu=32,mem=250G,gres/gpu=2``.
 
@@ -501,8 +535,15 @@ class SlurmCollector(object):
 
         cfg_tres = parse_tres(record.get("CfgTRES", ""))
         alloc_tres = parse_tres(record.get("AllocTRES", ""))
-        gpus_total = int(cfg_tres.get("gres/gpu", 0))
-        gpus_alloc = int(alloc_tres.get("gres/gpu", 0))
+        # gres/gpu is only present in the TRES fields when the cluster lists it
+        # in AccountingStorageTRES, which is not the default.  Gres and GresUsed
+        # are always populated, so they are the fallback.
+        configured_gres = parse_gres(record.get("Gres", ""))
+        used_gres = parse_gres(record.get("GresUsed", ""))
+        gpus_total = int(cfg_tres.get("gres/gpu", configured_gres.get("gpu", 0)))
+        gpus_alloc = int(alloc_tres.get("gres/gpu", used_gres.get("gpu", 0)))
+        gpu_types = ",".join(sorted(key.split(":", 1)[1] for key in configured_gres
+                                    if key.startswith("gpu:")))
 
         load = to_float(record.get("CPULoad"))
         boot_time = parse_slurm_datetime(record.get("BootTime"))
@@ -548,6 +589,7 @@ class SlurmCollector(object):
             "gpus_allocated": gpus_alloc,
             "gpus_idle": max(gpus_total - gpus_alloc, 0),
             "gpu_utilization": percent(gpus_alloc, gpus_total),
+            "gpu_type": gpu_types,
             "weight": to_int(record.get("Weight"), 0) or 0,
             "version": record.get("Version", ""),
             "reason": reason,

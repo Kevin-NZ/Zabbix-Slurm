@@ -6199,6 +6199,40 @@ On clusters with more than a few hundred nodes, restrict the discovery with {$SL
                             </tags>
                         </item_prototype>
                         <item_prototype>
+                            <uuid>3eb4223f096c4bd9a170f42d4e3ca656</uuid>
+                            <name>Node [{#NODE}]: GPU type</name>
+                            <type>DEPENDENT</type>
+                            <key>slurm.node.gpu.type[{#NODE}]</key>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>GPU model as configured in the node's Gres, for example a100. Empty on nodes without GPUs, or where the GRES is untyped.</description>
+                            <preprocessing>
+                                <step>
+                                    <type>JSONPATH</type>
+                                    <parameters>
+                                        <parameter>$.nodes[?(@.name=='{#NODE}')].gpu_type.first()</parameter>
+                                    </parameters>
+                                    <error_handler>DISCARD_VALUE</error_handler>
+                                </step>
+                                <step>
+                                    <type>DISCARD_UNCHANGED_HEARTBEAT</type>
+                                    <parameters>
+                                        <parameter>1d</parameter>
+                                    </parameters>
+                                </step>
+                            </preprocessing>
+                            <master_item>
+                                <key>slurm.nodes</key>
+                            </master_item>
+                            <tags>
+                                <tag>
+                                    <tag>component</tag>
+                                    <value>nodes</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                        <item_prototype>
                             <uuid>a5dc91afc9a24999815bd375ee99f41f</uuid>
                             <name>Node [{#NODE}]: Uptime</name>
                             <type>DEPENDENT</type>

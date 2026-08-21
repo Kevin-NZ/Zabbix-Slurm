@@ -861,6 +861,10 @@ NODE_ITEMS = [
              "gpus_allocated", master=MASTER_NODES),
     lld_item("slurm.node.gpu.utilization[{#NODE}]", "Node [{#NODE}]: GPU allocation",
              "gpu_utilization", value_type="FLOAT", units="%", master=MASTER_NODES),
+    lld_item("slurm.node.gpu.type[{#NODE}]", "Node [{#NODE}]: GPU type", "gpu_type",
+             value_type="CHAR", heartbeat="1d", trends="0", master=MASTER_NODES,
+             description="GPU model as configured in the node's Gres, for example a100. "
+                         "Empty on nodes without GPUs, or where the GRES is untyped."),
     lld_item("slurm.node.uptime[{#NODE}]", "Node [{#NODE}]: Uptime", "uptime",
              units="uptime", master=MASTER_NODES),
     lld_item("slurm.node.unavailable.age[{#NODE}]", "Node [{#NODE}]: Unavailable for",
