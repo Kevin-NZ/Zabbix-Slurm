@@ -676,9 +676,24 @@ class ExplainNodeTest(unittest.TestCase):
         self.assertIn("field not present", stdout)
 
     def test_unknown_node(self):
+        """Real scontrol exits non-zero for a name it does not know."""
         code, stdout, _ = self.run_explain("does-not-exist")
         self.assertEqual(code, 1)
-        self.assertIn("no node record", stdout)
+        self.assertIn("could not read node", stdout)
+        self.assertIn("does-not-exist", stdout)
+
+    def test_output_without_a_node_record(self):
+        """The other failure path: the command succeeds but says nothing useful."""
+        directory = tempfile.mkdtemp(prefix="slurm-explain")
+        try:
+            stub = os.path.join(directory, "scontrol")
+            with open(stub, "w") as handle:
+                handle.write("#!/bin/sh\necho 'No nodes in the system'\n")
+            os.chmod(stub, 0o755)
+            collector = sz.SlurmCollector(bin_dir=directory)
+            self.assertEqual(sz.explain_node(collector, "whatever"), 1)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 class QueueWaitTest(unittest.TestCase):
