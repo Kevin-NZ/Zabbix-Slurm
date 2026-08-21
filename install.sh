@@ -94,7 +94,7 @@ done
 
 # --- sanity checks ----------------------------------------------------------
 missing=""
-for command in scontrol squeue sdiag; do
+for command in scontrol squeue sdiag sinfo; do
     command -v "$command" >/dev/null 2>&1 || missing="$missing $command"
 done
 if [ -n "$missing" ]; then

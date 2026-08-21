@@ -77,6 +77,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+* **GPU allocation falls back to sinfo when scontrol does not report it.** Not
+  every Slurm release prints `GresUsed` in `scontrol show node`, which left
+  clusters reporting GPUs that were never allocated. When every GPU node claims
+  zero allocated, the collector now asks sinfo for the same figure through its
+  `GresUsed` format field and fills the gap. The query only runs in that
+  situation, so it costs nothing where scontrol already answers.
 * **GPU allocation could still read zero after the Gres fix.** Two remaining
   gaps: typed GRES in the TRES fields (`gres/gpu:a100=3`) was mis-parsed because
   `:` was not allowed in a TRES name, and a source that reported the key with a

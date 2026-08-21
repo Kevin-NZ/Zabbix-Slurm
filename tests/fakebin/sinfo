@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -n "$SLURM_TEST_COUNTER" ] && echo "sinfo $*" >> "$SLURM_TEST_COUNTER"
+cat "$(dirname "$0")/../fixtures/sinfo_gresused.txt"

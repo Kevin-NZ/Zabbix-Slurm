@@ -521,7 +521,54 @@ class SlurmCollector(object):
             node = self._build_node(record)
             if node is not None:
                 nodes.append(node)
+        return self.fill_gpu_allocation(nodes)
+
+    def fill_gpu_allocation(self, nodes):
+        """Second opinion on GPU allocation, from sinfo.
+
+        Not every Slurm release prints GresUsed in ``scontrol show node``, and
+        gres/gpu is only in the TRES fields when the cluster asks for it, so a
+        cluster can end up reporting GPUs that are never allocated.  sinfo
+        exposes the same figure through its GresUsed format field, so when the
+        whole cluster claims zero allocated GPUs it is worth a second look.
+
+        The query only runs in that situation, which means it costs nothing on
+        clusters where scontrol already answers, and one extra command while
+        every GPU genuinely is idle.
+        """
+        with_gpus = [node for node in nodes if node["gpus_total"] > 0]
+        if not with_gpus or any(node["gpus_allocated"] for node in with_gpus):
+            return nodes
+
+        used = self.collect_gres_used()
+        if not used:
+            return nodes
+
+        for node in with_gpus:
+            allocated = used.get(node["name"], 0)
+            if not allocated:
+                continue
+            node["gpus_allocated"] = min(allocated, node["gpus_total"])
+            node["gpus_idle"] = max(node["gpus_total"] - node["gpus_allocated"], 0)
+            node["gpu_utilization"] = percent(node["gpus_allocated"], node["gpus_total"])
         return nodes
+
+    def collect_gres_used(self):
+        """``sinfo`` -> GPUs in use per node."""
+        used = {}
+        output = self.run(
+            ["sinfo", "--Node", "--noheader", "--Format=NodeList:100,GresUsed:200"],
+            ignore_errors=True)
+        if output is None:
+            return used
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            gpus = parse_gres(fields[1]).get("gpu", 0)
+            # A node can appear once per partition it belongs to.
+            used[fields[0]] = max(used.get(fields[0], 0), gpus)
+        return used
 
     def _build_node(self, record):
         name = record.get("NodeName")
@@ -1629,15 +1676,24 @@ def explain_node(collector, wanted):
     print("  AllocTRES  -> gpus=%d" % tres_gpu_count(allocated))
 
     node = collector._build_node(record)
+    print("\nsinfo fallback (used when the whole cluster reports no allocated GPUs):")
+    from_sinfo = collector.collect_gres_used()
+    if not from_sinfo:
+        print("  sinfo returned nothing usable")
+    else:
+        print("  GresUsed for this node -> %s" % from_sinfo.get(record["NodeName"], 0))
+
     print("\nderived:")
     for field in ("gpus_total", "gpus_allocated", "gpus_idle", "gpu_utilization",
                   "gpu_type"):
         print("  %-16s = %s" % (field, node.get(field)))
 
     if node.get("gpus_total") and not node.get("gpus_allocated"):
-        print("\nNo GPUs look allocated. If jobs are using this node's GPUs, the "
-              "raw fields above are the ones to report:\n"
+        print("\nNo GPUs look allocated on this node. If jobs are using its GPUs, the "
+              "raw fields and the sinfo line above are what to report:\n"
               "  https://github.com/Kevin-NZ/Zabbix-Slurm/issues")
+    if collector.errors:
+        print("\nerrors: %s" % "; ".join(collector.errors))
     return 0
 
 

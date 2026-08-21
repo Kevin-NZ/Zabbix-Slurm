@@ -40,7 +40,7 @@ because it is the only collection that queries the accounting database.
 
 ## Requirements
 
-* Slurm 20.02 or newer (`scontrol`, `squeue`, `sdiag`, optionally `sacctmgr`)
+* Slurm 20.02 or newer (`scontrol`, `squeue`, `sdiag`, `sinfo`, optionally `sacctmgr`)
 * Python 3.6 or newer, standard library only
 * Zabbix 7.0 server and agent (agent 1 or agent 2)
 * A host running the Zabbix agent with working Slurm client commands, usually the
@@ -409,10 +409,12 @@ The cluster has no accounting database, or `sacctmgr` is not usable by the
 *slurmdbd is not reachable* trigger.
 
 **GPU totals or allocation read zero**
-Slurm describes GPUs in two places — the `Gres`/`GresUsed` fields and the
-`CfgTRES`/`AllocTRES` fields — and which of them is populated depends on the
-release and on `AccountingStorageTRES`. The collector reads both and keeps the
-larger. To see what your cluster reports for one node:
+Slurm describes GPUs in three places — the `Gres`/`GresUsed` fields of
+`scontrol show node`, the `CfgTRES`/`AllocTRES` fields, and sinfo's `GresUsed`
+format field — and which of them is populated depends on the release and on
+`AccountingStorageTRES`. The collector reads the first two and keeps the larger;
+if every GPU node then still reports zero allocated, it asks sinfo as well. To
+see what your cluster reports for one node:
 
 ```sh
 /usr/local/bin/slurm_zabbix.py --explain-node gpu001

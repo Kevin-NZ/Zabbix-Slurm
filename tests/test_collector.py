@@ -520,6 +520,77 @@ class GpuAccountingTest(unittest.TestCase):
         self.assertEqual(nodes["n001"]["gpu_type"], "")
 
 
+class GresUsedFallbackTest(unittest.TestCase):
+    """Some Slurm releases never print GresUsed in scontrol show node."""
+
+    @staticmethod
+    def nodes_without_gresused():
+        """Nodes with GPUs configured but no usable allocation information."""
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        built = []
+        with open(os.path.join(HERE, "fixtures",
+                               "scontrol_show_node_untracked_gres.txt")) as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                record = sz.parse_kv_line(line)
+                record.pop("GresUsed", None)      # as if scontrol never printed it
+                built.append(collector._build_node(record))
+        return built
+
+    def test_without_the_fallback_everything_reads_zero(self):
+        nodes = self.nodes_without_gresused()
+        self.assertTrue(all(node["gpus_total"] > 0 for node in nodes))
+        self.assertEqual(sum(node["gpus_allocated"] for node in nodes), 0)
+
+    def test_sinfo_fills_in_the_allocation(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        nodes = dict((node["name"], node) for node in
+                     collector.fill_gpu_allocation(self.nodes_without_gresused()))
+        self.assertEqual(nodes["gpu01"]["gpus_allocated"], 5)
+        self.assertEqual(nodes["gpu01"]["gpus_idle"], 3)
+        self.assertAlmostEqual(nodes["gpu01"]["gpu_utilization"], 62.5)
+        self.assertEqual(nodes["gpu03"]["gpus_allocated"], 1)
+        self.assertEqual(nodes["gpu04"]["gpus_allocated"], 2)
+        # Genuinely idle nodes stay at zero.
+        self.assertEqual(nodes["gpu02"]["gpus_allocated"], 0)
+
+    def test_allocation_is_capped_at_the_configured_total(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        node = dict(self.nodes_without_gresused()[0])
+        node["gpus_total"] = 2          # fewer than sinfo reports
+        filled = collector.fill_gpu_allocation([node])[0]
+        self.assertEqual(filled["gpus_allocated"], 2)
+        self.assertEqual(filled["gpus_idle"], 0)
+
+    def test_the_fallback_is_skipped_when_scontrol_already_answers(self):
+        """No extra command on clusters where GresUsed works."""
+        directory = tempfile.mkdtemp(prefix="slurm-fallback")
+        counter = os.path.join(directory, "log")
+        try:
+            environment = os.environ.copy()
+            environment["SLURM_TEST_COUNTER"] = counter
+            process = subprocess.Popen(
+                [sys.executable, COLLECTOR, "--mode", "nodes", "--slurm-bin-dir", FAKEBIN,
+                 "--no-cache"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, env=environment)
+            stdout, stderr = process.communicate()
+            self.assertEqual(process.returncode, 0, stderr)
+            # g001 has GPUs allocated through the normal path.
+            nodes = dict((node["name"], node) for node in json.loads(stdout)["nodes"])
+            self.assertEqual(nodes["g001"]["gpus_allocated"], 3)
+            with open(counter) as handle:
+                self.assertNotIn("sinfo", handle.read())
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def test_no_gpu_cluster_never_calls_sinfo(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        plain = [node for node in collector.collect_nodes() if node["gpus_total"] == 0]
+        self.assertTrue(plain)
+        self.assertEqual(collector.fill_gpu_allocation(plain), plain)
+
+
 class ExplainNodeTest(unittest.TestCase):
     """The diagnostic has to show the raw fields, not just the conclusion."""
 
