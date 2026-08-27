@@ -13,8 +13,7 @@ case "$1 $2" in
       if [ -n "$3" ] && [ "$3" != "--oneliner" ]; then
           grep -h "^NodeName=$3 " "$FIX/scontrol_show_node.txt" \
                "$FIX/scontrol_show_node_untracked_gres.txt" \
-               "$FIX/scontrol_show_node_no_gresused.txt" \
-               "$FIX/scontrol_show_node_gpu.txt" 2>/dev/null
+               "$FIX/scontrol_show_node_no_gresused.txt" 2>/dev/null
       else
           cat "$FIX/scontrol_show_node.txt"
       fi ;;

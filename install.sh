@@ -6,7 +6,6 @@
 #   sudo ./install.sh                 # agent, direct collection
 #   sudo ./install.sh --timer         # agent 2 / agent, cache refreshed by systemd
 #   sudo ./install.sh --accounting    # also collect job throughput from sacct
-#   sudo ./install.sh --gpu           # on a GPU node: report GPU utilisation
 #
 # The Zabbix template itself is imported through the Zabbix frontend, see
 # README.md.
@@ -21,21 +20,16 @@ CACHE_FILE="$CACHE_DIR/cache.json"
 ZABBIX_USER=zabbix
 USE_TIMER=0
 USE_ACCOUNTING=0
-USE_GPU=0
 
 usage() {
     cat <<EOF
-Usage: $0 [--timer] [--accounting] [--gpu] [--user USER] [--agent-dir DIR]
+Usage: $0 [--timer] [--accounting] [--user USER] [--agent-dir DIR]
 
   --timer        install the systemd timer and configure the agent to read the
                  cache only (recommended above a few hundred nodes)
   --accounting   also install the slurm.accounting UserParameter, which reads
                  job throughput from sacct. The matching item still has to be
                  enabled on the host in Zabbix.
-  --gpu          install the slurm.gpu UserParameter for GPU nodes, which
-                 reports what each GPU is doing next to what Slurm allocated.
-                 Run this on the GPU nodes and link the "Slurm GPU node"
-                 template to them.
   --user USER    account the Zabbix agent runs as (default: $ZABBIX_USER)
   --agent-dir    agent include directory; autodetected when not given
 EOF
@@ -46,7 +40,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --timer) USE_TIMER=1 ;;
         --accounting) USE_ACCOUNTING=1 ;;
-        --gpu) USE_GPU=1 ;;
         --user) ZABBIX_USER=$2; shift ;;
         --agent-dir) AGENT_DIR=$2; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -101,11 +94,7 @@ done
 
 # --- sanity checks ----------------------------------------------------------
 missing=""
-SLURM_COMMANDS="scontrol squeue sdiag sinfo"
-if [ "$USE_GPU" -eq 1 ]; then
-    SLURM_COMMANDS="scontrol sinfo nvidia-smi"
-fi
-for command in $SLURM_COMMANDS; do
+for command in scontrol squeue sdiag sinfo; do
     command -v "$command" >/dev/null 2>&1 || missing="$missing $command"
 done
 if [ -n "$missing" ]; then
@@ -127,16 +116,6 @@ install -d -m 0750 -o "$ZABBIX_USER" -g "$ZABBIX_USER" "$CACHE_DIR" 2>/dev/null 
 
 # --- agent configuration ----------------------------------------------------
 CONF_TARGET="$AGENT_DIR/slurm.conf"
-if [ "$USE_GPU" -eq 1 ]; then
-    # A GPU compute node reports its own GPUs; the cluster wide keys belong on
-    # the host that represents the cluster.
-    echo "Installing GPU UserParameter to $AGENT_DIR/slurm-gpu.conf"
-    cat > "$AGENT_DIR/slurm-gpu.conf" <<EOF
-# Installed by Zabbix-Slurm install.sh --gpu
-UserParameter=slurm.gpu,$BIN_TARGET --mode gpu --cache-file $CACHE_FILE --cache-ttl 55
-EOF
-    chmod 0644 "$AGENT_DIR/slurm-gpu.conf"
-else
 echo "Installing UserParameters to $CONF_TARGET"
 if [ "$USE_TIMER" -eq 1 ]; then
     cat > "$CONF_TARGET" <<EOF
@@ -164,7 +143,6 @@ UserParameter=slurm.accounting,$BIN_TARGET --mode accounting --cache-file $CACHE
 EOF
 fi
 chmod 0644 "$CONF_TARGET"
-fi
 
 # --- systemd timer ----------------------------------------------------------
 if [ "$USE_TIMER" -eq 1 ]; then
@@ -191,11 +169,7 @@ fi
 # --- verification -----------------------------------------------------------
 echo ""
 echo "Verifying collection as $ZABBIX_USER"
-VERIFY_MODE=cluster
-if [ "$USE_GPU" -eq 1 ]; then
-    VERIFY_MODE=gpu
-fi
-if su -s /bin/sh -c "$BIN_TARGET --mode $VERIFY_MODE --cache-file $CACHE_FILE --pretty" \
+if su -s /bin/sh -c "$BIN_TARGET --mode cluster --cache-file $CACHE_FILE --pretty" \
         "$ZABBIX_USER" 2>/dev/null | head -20; then
     :
 else
@@ -214,13 +188,6 @@ Next steps:
   4. Import templates/slurm_cluster_7.0.xml in the Zabbix frontend and link it
      to the host.
 EOF
-
-if [ "$USE_GPU" -eq 1 ]; then
-    cat <<EOF
-  5. Import templates/slurm_gpu_node_7.0.xml and link "Slurm GPU node by Zabbix
-     agent" to this node. It reports GPU utilisation against Slurm allocation.
-EOF
-fi
 
 if [ "$USE_ACCOUNTING" -eq 1 ]; then
     cat <<EOF

@@ -969,9 +969,9 @@ DISCOVERY_RULES = [
 # ---------------------------------------------------------------------------
 
 
-def expr(key, function="last", args="", value="", host=None):
+def expr(key, function="last", args="", value=""):
     """A history function applied to an item: min(/template/key,15m)>5."""
-    reference = "/%s/%s" % (host or TEMPLATE, key)
+    reference = "/%s/%s" % (TEMPLATE, key)
     if args:
         reference = "%s,%s" % (reference, args)
     return "%s(%s)%s" % (function, reference, value)
@@ -1905,314 +1905,15 @@ def render_dependencies(element, definition, index, tag_name="dependencies"):
         sub(entry, "expression", target["expression"])
 
 
-def render_graph_items(parent, items, host=None):
+def render_graph_items(parent, items):
     container = sub(parent, "graph_items")
     for sortorder, (key, color) in enumerate(items):
         entry = sub(container, "graph_item")
         sub(entry, "sortorder", sortorder)
         sub(entry, "color", color)
         reference = sub(entry, "item")
-        sub(reference, "host", host or TEMPLATE)
+        sub(reference, "host", TEMPLATE)
         sub(reference, "key", key)
-
-
-# ---------------------------------------------------------------------------
-# GPU node template
-# ---------------------------------------------------------------------------
-#
-# Slurm knows which GPUs it handed to jobs; it has no idea what those GPUs are
-# doing.  Device utilisation can only be measured on the GPU node itself, so
-# this is a separate template linked to the compute nodes rather than to the
-# host that represents the cluster.  Reporting both numbers from the same place
-# is the point: "allocated" next to "actually busy" is what shows a job holding
-# a GPU without using it.
-
-GPU_TEMPLATE = "Slurm GPU node by Zabbix agent"
-MASTER_GPU = "slurm.gpu"
-
-GPU_TEMPLATE_DESCRIPTION = """GPU utilisation on a Slurm compute node.
-
-Runs bin/slurm_zabbix.py --mode gpu on the node itself: nvidia-smi reports what
-each GPU is doing, scontrol/sinfo report which GPUs Slurm allocated, and the two
-are reported side by side.
-
-Link this to the GPU nodes, not to the host representing the cluster. That host
-carries "Slurm cluster by Zabbix agent", which reports allocation for the whole
-cluster but cannot see device utilisation.
-
-Requires: the Zabbix agent, nvidia-smi and the Slurm client commands on the node,
-plus the slurm.gpu UserParameter from agent/slurm-gpu.conf."""
-
-
-def gexpr(key, function="last", args="", value=""):
-    return expr(key, function, args, value, host=GPU_TEMPLATE)
-
-
-def gpu_item(key, name, path, value_type="UNSIGNED", units="", description="",
-             valuemap=None, heartbeat=None, trends="365d"):
-    return item(key, name, path, value_type=value_type, units=units, component="gpu",
-                valuemap=valuemap, master=MASTER_GPU, description=description,
-                heartbeat=heartbeat, trends=trends)
-
-
-GPU_MASTER_ITEM = {
-    "key": MASTER_GPU,
-    "name": "Slurm GPU: Get GPU data",
-    "delay": "1m",
-    "description": ("What this node's GPUs are doing, from nvidia-smi, together "
-                    "with what Slurm allocated on the node.\n"
-                    "Every GPU metric depends on this item."),
-}
-
-GPU_ITEMS = [
-    gpu_item("slurm.gpu.node", "Slurm GPU: Node name", "$.gpu.node",
-             value_type="CHAR", heartbeat="1d", trends="0",
-             description="Slurm node name the allocation was looked up under. If this "
-                         "is not the name Slurm knows, allocation reads zero: set it "
-                         "with --node in the UserParameter."),
-    gpu_item("slurm.gpu.count", "Slurm GPU: GPUs present", "$.gpu.count", heartbeat="1d"),
-    gpu_item("slurm.gpu.allocated", "Slurm GPU: GPUs allocated by Slurm",
-             "$.gpu.allocated",
-             description="GPUs Slurm has handed to jobs on this node."),
-    gpu_item("slurm.gpu.allocation", "Slurm GPU: Allocation", "$.gpu.allocation",
-             value_type="FLOAT", units="%",
-             description="Allocated GPUs as a percentage of the GPUs present. Compare "
-                         "with utilisation: allocation well above utilisation means "
-                         "jobs are holding GPUs they are not using."),
-    gpu_item("slurm.gpu.busy", "Slurm GPU: GPUs busy", "$.gpu.busy",
-             description="GPUs actually doing work, that is above "
-                         "{$SLURM.GPU.IDLE.BELOW}% utilisation."),
-    gpu_item("slurm.gpu.allocated_idle", "Slurm GPU: GPUs allocated but idle",
-             "$.gpu.allocated_idle",
-             description="GPUs Slurm has allocated to a job while the device itself is "
-                         "doing nothing. This is wasted capacity: the GPU is unavailable "
-                         "to everyone else and unused by its owner.\n\n"
-                         "A short spell is normal between job phases; a sustained count "
-                         "is worth chasing."),
-    gpu_item("slurm.gpu.utilization.mean", "Slurm GPU: Utilisation, mean",
-             "$.gpu.utilization_mean", value_type="FLOAT", units="%",
-             description="Mean utilisation across the GPUs on this node."),
-    gpu_item("slurm.gpu.utilization.max", "Slurm GPU: Utilisation, max",
-             "$.gpu.utilization_max", value_type="FLOAT", units="%"),
-    gpu_item("slurm.gpu.memory.total", "Slurm GPU: Memory total",
-             "$.gpu.memory_total_bytes", units="B", heartbeat="1d"),
-    gpu_item("slurm.gpu.memory.used", "Slurm GPU: Memory used",
-             "$.gpu.memory_used_bytes", units="B"),
-    gpu_item("slurm.gpu.memory.utilization", "Slurm GPU: Memory used, percent",
-             "$.gpu.memory_utilization", value_type="FLOAT", units="%"),
-    gpu_item("slurm.gpu.temperature.max", "Slurm GPU: Temperature, max",
-             "$.gpu.temperature_max", units="!°C"),
-    gpu_item("slurm.gpu.power", "Slurm GPU: Power draw", "$.gpu.power",
-             value_type="FLOAT", units="W"),
-    gpu_item("slurm.gpu.collector.errors", "Slurm GPU: Collector errors",
-             "$.meta.errors", value_type="CHAR", trends="0",
-             description="Errors reported while querying nvidia-smi or Slurm."),
-    gpu_item("slurm.gpu.collector.error_count", "Slurm GPU: Collector error count",
-             "$.meta.error_count"),
-]
-
-GPU_DEVICE_ITEMS = [
-    lld_item("slurm.gpu.device.name[{#GPU}]", "GPU [{#GPU}]: Model", "name",
-             value_type="CHAR", heartbeat="1d", trends="0", master=MASTER_GPU,
-             component="gpu"),
-    lld_item("slurm.gpu.device.utilization[{#GPU}]", "GPU [{#GPU}]: Utilisation",
-             "utilization", value_type="FLOAT", units="%", master=MASTER_GPU,
-             component="gpu",
-             description="What the device is doing, as reported by nvidia-smi."),
-    lld_item("slurm.gpu.device.memory.used[{#GPU}]", "GPU [{#GPU}]: Memory used",
-             "memory_used_bytes", units="B", master=MASTER_GPU, component="gpu"),
-    lld_item("slurm.gpu.device.memory.utilization[{#GPU}]",
-             "GPU [{#GPU}]: Memory used, percent", "memory_used_pct",
-             value_type="FLOAT", units="%", master=MASTER_GPU, component="gpu"),
-    lld_item("slurm.gpu.device.temperature[{#GPU}]", "GPU [{#GPU}]: Temperature",
-             "temperature", value_type="FLOAT", units="!°C", master=MASTER_GPU,
-             component="gpu"),
-    lld_item("slurm.gpu.device.power[{#GPU}]", "GPU [{#GPU}]: Power draw", "power",
-             value_type="FLOAT", units="W", master=MASTER_GPU, component="gpu"),
-    lld_item("slurm.gpu.device.allocated[{#GPU}]", "GPU [{#GPU}]: Allocated by Slurm",
-             "allocated", valuemap="Slurm yes/no", master=MASTER_GPU, component="gpu",
-             description="Whether Slurm has given this device to a job."),
-    lld_item("slurm.gpu.device.allocated_idle[{#GPU}]",
-             "GPU [{#GPU}]: Allocated but idle", "allocated_idle",
-             valuemap="Slurm yes/no", master=MASTER_GPU, component="gpu",
-             description="Allocated to a job that is not using it."),
-]
-
-GPU_DISCOVERY = {
-    "key": "slurm.gpu.discovery",
-    "name": "Slurm GPU: GPU discovery",
-    "master": MASTER_GPU,
-    "path": "$.devices",
-    "component": "gpu",
-    "macros": [("{#GPU}", "$.id"), ("{#GPU_NAME}", "$.name")],
-    "filters": [("{#GPU_NAME}", "MATCHES_REGEX", "{$SLURM.GPU.DISCOVERY.MATCHES}"),
-                ("{#GPU_NAME}", "NOT_MATCHES_REGEX",
-                 "{$SLURM.GPU.DISCOVERY.NOT_MATCHES}")],
-    "selector": "$.devices[?(@.id=='{#GPU}')].%s.first()",
-    "items": GPU_DEVICE_ITEMS,
-    "lifetime": "7d",
-    "description": "Discovers the GPUs nvidia-smi reports on this node.",
-}
-
-GPU_TRIGGERS = [
-    {
-        "id": "gpu-allocated-idle",
-        "name": "Slurm GPU: GPUs are allocated but idle",
-        "expression": gexpr("slurm.gpu.allocated_idle", "min",
-                            "{$SLURM.GPU.IDLE.TIME}", ">{$SLURM.GPU.IDLE.MAX}"),
-        "priority": "WARNING",
-        "scope": "capacity",
-        "opdata": "Idle but allocated: {ITEM.LASTVALUE1}",
-        "description": "Jobs are holding GPUs without using them. The capacity is "
-                       "unavailable to everyone else and unused by its owner.\n\n"
-                       "Raise {$SLURM.GPU.IDLE.TIME} on a cluster whose jobs have long "
-                       "quiet phases, such as data loading between epochs.",
-    },
-    {
-        "id": "gpu-collector-errors",
-        "name": "Slurm GPU: Collector reported errors",
-        "expression": gexpr("slurm.gpu.collector.error_count", "min", "10m", ">0"),
-        "priority": "WARNING",
-        "scope": "availability",
-        "opdata": "Errors: {ITEM.LASTVALUE1}",
-        "description": "nvidia-smi or the Slurm client commands could not be queried. "
-                       "The item 'Collector errors' holds the messages.",
-    },
-    {
-        "id": "gpu-temperature",
-        "name": "Slurm GPU: Temperature is above {$SLURM.GPU.TEMP.MAX}",
-        "expression": gexpr("slurm.gpu.temperature.max", "min", "10m",
-                            ">{$SLURM.GPU.TEMP.MAX}"),
-        "priority": "AVERAGE",
-        "scope": "performance",
-        "opdata": "Hottest GPU: {ITEM.LASTVALUE1}",
-        "depends": ["gpu-collector-errors"],
-        "description": "A GPU is running hot enough to be throttled.",
-    },
-]
-
-GPU_DEVICE_TRIGGERS = [
-    {
-        "id": "gpu-device-idle",
-        "name": "GPU [{#GPU}]: Allocated but idle",
-        "expression": gexpr("slurm.gpu.device.allocated_idle[{#GPU}]", "min",
-                            "{$SLURM.GPU.IDLE.TIME}", "=1"),
-        "priority": "WARNING",
-        "scope": "capacity",
-        "description": "This GPU has been allocated to a job that is not using it.",
-    },
-    {
-        "id": "gpu-device-temperature",
-        "name": "GPU [{#GPU}]: Temperature is above {$SLURM.GPU.TEMP.MAX}",
-        "expression": gexpr("slurm.gpu.device.temperature[{#GPU}]", "min", "10m",
-                            ">{$SLURM.GPU.TEMP.MAX}"),
-        "priority": "AVERAGE",
-        "scope": "performance",
-        "opdata": "Temperature: {ITEM.LASTVALUE1}",
-    },
-]
-
-GPU_MACROS = [
-    ("{$SLURM.GPU.IDLE.BELOW}", "5",
-     "GPU utilisation (%) below which a device counts as idle. Set to match "
-     "--gpu-idle-below in the UserParameter; this macro only documents it."),
-    ("{$SLURM.GPU.IDLE.MAX}", "0",
-     "Number of allocated but idle GPUs tolerated before alerting."),
-    ("{$SLURM.GPU.IDLE.TIME}", "30m",
-     "How long GPUs must sit allocated and idle before alerting. Raise it where "
-     "jobs have long quiet phases."),
-    ("{$SLURM.GPU.TEMP.MAX}", "85",
-     "GPU temperature considered too hot."),
-    ("{$SLURM.GPU.DISCOVERY.MATCHES}", ".*", "GPU models to discover."),
-    ("{$SLURM.GPU.DISCOVERY.NOT_MATCHES}", "CHANGE_IF_NEEDED",
-     "GPU models to exclude from discovery."),
-]
-
-GPU_GRAPHS = [
-    ("Slurm GPU: Allocation against utilisation", [
-        ("slurm.gpu.count", GREY),
-        ("slurm.gpu.allocated", BLUE),
-        ("slurm.gpu.busy", GREEN),
-        ("slurm.gpu.allocated_idle", RED),
-        ("slurm.gpu.utilization.mean", ORANGE),
-    ]),
-    ("Slurm GPU: Memory", [
-        ("slurm.gpu.memory.total", GREY), ("slurm.gpu.memory.used", BLUE),
-    ]),
-    ("Slurm GPU: Temperature and power", [
-        ("slurm.gpu.temperature.max", RED), ("slurm.gpu.power", BLUE),
-    ]),
-]
-
-GPU_GRAPH_PROTOTYPES = [
-    ("GPU [{#GPU}]: Utilisation", [
-        ("slurm.gpu.device.utilization[{#GPU}]", GREEN),
-        ("slurm.gpu.device.memory.utilization[{#GPU}]", BLUE),
-        ("slurm.gpu.device.allocated[{#GPU}]", GREY),
-    ]),
-]
-
-GPU_DASHBOARD = ("Slurm GPU node", [
-    ("GPUs", [
-        value_widget("GPUs present", "slurm.gpu.count", 0, 0),
-        value_widget("Allocated by Slurm", "slurm.gpu.allocated", 12, 0),
-        value_widget("Busy", "slurm.gpu.busy", 24, 0),
-        value_widget("Allocated but idle", "slurm.gpu.allocated_idle", 36, 0),
-        value_widget("Utilisation, mean", "slurm.gpu.utilization.mean", 48, 0),
-        value_widget("Temperature, max", "slurm.gpu.temperature.max", 60, 0),
-        graph_widget("Allocation against utilisation",
-                     "Slurm GPU: Allocation against utilisation", 0, 3, width=72),
-        graph_widget("Memory", "Slurm GPU: Memory", 0, 9, width=36),
-        graph_widget("Temperature and power", "Slurm GPU: Temperature and power",
-                     36, 9, width=36),
-        graph_prototype_widget("Per GPU utilisation", "GPU [{#GPU}]: Utilisation",
-                               0, 15, width=72, height=12, columns=2, rows=2),
-    ]),
-])
-
-
-def render_dashboard(parent, definition, host, uuid_scope):
-    """Render one dashboard; widget references are unique within it."""
-    dashboard_name, pages = definition
-    dashboard = sub(parent, "dashboard")
-    sub(dashboard, "uuid", make_uuid(uuid_scope, dashboard_name))
-    sub(dashboard, "name", dashboard_name)
-    # Zabbix starts the slideshow by itself on a multi-page dashboard, which
-    # rotates the pages away while somebody is reading one of them.
-    sub(dashboard, "auto_start", "NO")
-    pages_element = sub(dashboard, "pages")
-    references = 0
-    for page_name, widgets in pages:
-        page = sub(pages_element, "page")
-        sub(page, "name", page_name)
-        widgets_element = sub(page, "widgets")
-        for widget in widgets:
-            widget_element = sub(widgets_element, "widget")
-            sub(widget_element, "type", widget["type"])
-            sub(widget_element, "name", widget["name"])
-            sub(widget_element, "x", widget["x"])
-            sub(widget_element, "y", widget["y"])
-            sub(widget_element, "width", widget["width"])
-            sub(widget_element, "height", widget["height"])
-            widget_fields = list(widget["fields"])
-            if widget.get("reference"):
-                widget_fields.append(("STRING", "reference", reference_code(references)))
-                references += 1
-            fields = sub(widget_element, "fields")
-            for field_type, field_name, field_value in widget_fields:
-                field = sub(fields, "field")
-                sub(field, "type", field_type)
-                sub(field, "name", field_name)
-                if field_type == "ITEM":
-                    value = sub(field, "value")
-                    sub(value, "host", host)
-                    sub(value, "key", field_value)
-                elif field_type in ("GRAPH", "GRAPH_PROTOTYPE"):
-                    value = sub(field, "value")
-                    sub(value, "host", host)
-                    sub(value, "name", field_value)
-                else:
-                    sub(field, "value", field_value)
 
 
 def build():
@@ -2322,8 +2023,46 @@ def build():
 
     # -- dashboards ---------------------------------------------------------
     dashboards = sub(template, "dashboards")
-    for definition in DASHBOARDS:
-        render_dashboard(dashboards, definition, host=TEMPLATE, uuid_scope="dashboard")
+    for dashboard_name, pages in DASHBOARDS:
+        dashboard = sub(dashboards, "dashboard")
+        sub(dashboard, "uuid", make_uuid("dashboard", dashboard_name))
+        sub(dashboard, "name", dashboard_name)
+        # Zabbix starts the slideshow by itself on a multi-page dashboard, which
+        # rotates the pages away while somebody is reading one of them.
+        sub(dashboard, "auto_start", "NO")
+        pages_element = sub(dashboard, "pages")
+        references = 0
+        for page_name, widgets in pages:
+            page = sub(pages_element, "page")
+            sub(page, "name", page_name)
+            widgets_element = sub(page, "widgets")
+            for widget in widgets:
+                widget_element = sub(widgets_element, "widget")
+                sub(widget_element, "type", widget["type"])
+                sub(widget_element, "name", widget["name"])
+                sub(widget_element, "x", widget["x"])
+                sub(widget_element, "y", widget["y"])
+                sub(widget_element, "width", widget["width"])
+                sub(widget_element, "height", widget["height"])
+                widget_fields = list(widget["fields"])
+                if widget.get("reference"):
+                    widget_fields.append(("STRING", "reference", reference_code(references)))
+                    references += 1
+                fields = sub(widget_element, "fields")
+                for field_type, field_name, field_value in widget_fields:
+                    field = sub(fields, "field")
+                    sub(field, "type", field_type)
+                    sub(field, "name", field_name)
+                    if field_type == "ITEM":
+                        value = sub(field, "value")
+                        sub(value, "host", TEMPLATE)
+                        sub(value, "key", field_value)
+                    elif field_type in ("GRAPH", "GRAPH_PROTOTYPE"):
+                        value = sub(field, "value")
+                        sub(value, "host", TEMPLATE)
+                        sub(value, "name", field_value)
+                    else:
+                        sub(field, "value", field_value)
 
     # -- template level tags ------------------------------------------------
     add_tags(template, [("class", "software"), ("target", "slurm")])
@@ -2347,124 +2086,6 @@ def build():
     return root
 
 
-def build_gpu_node():
-    """The GPU node export: one template, linked to the compute nodes."""
-    root = ET.Element("zabbix_export")
-    sub(root, "version", EXPORT_VERSION)
-
-    groups = sub(root, "template_groups")
-    group = sub(groups, "template_group")
-    sub(group, "uuid", TEMPLATE_GROUP_UUID)
-    sub(group, "name", TEMPLATE_GROUP)
-
-    templates = sub(root, "templates")
-    template = sub(templates, "template")
-    sub(template, "uuid", make_uuid("template", GPU_TEMPLATE))
-    sub(template, "template", GPU_TEMPLATE)
-    sub(template, "name", GPU_TEMPLATE)
-    sub(template, "description", GPU_TEMPLATE_DESCRIPTION)
-    template_groups = sub(template, "groups")
-    sub(sub(template_groups, "group"), "name", TEMPLATE_GROUP)
-
-    items_element = sub(template, "items")
-    render_master_item(items_element, GPU_MASTER_ITEM)
-    for definition in GPU_ITEMS:
-        render_item(items_element, definition, "gpu/item")
-
-    rules_element = sub(template, "discovery_rules")
-    rule = GPU_DISCOVERY
-    rule_element = sub(rules_element, "discovery_rule")
-    sub(rule_element, "uuid", make_uuid("gpu/lld", rule["key"]))
-    sub(rule_element, "name", rule["name"])
-    sub(rule_element, "type", "DEPENDENT")
-    sub(rule_element, "key", rule["key"])
-    sub(rule_element, "lifetime", rule["lifetime"])
-    sub(rule_element, "description", rule["description"])
-
-    prototypes = sub(rule_element, "item_prototypes")
-    for definition in rule["items"]:
-        prototype = dict(definition)
-        prototype["path"] = rule["selector"] % definition["field"]
-        prototype["component"] = definition["component"] or rule["component"]
-        render_item(prototypes, prototype, "gpu/lld/%s" % rule["key"], "item_prototype")
-
-    trigger_container = sub(rule_element, "trigger_prototypes")
-    index = dict((trigger["id"], trigger) for trigger in GPU_DEVICE_TRIGGERS)
-    for definition in GPU_DEVICE_TRIGGERS:
-        element = render_trigger(trigger_container, definition,
-                                 "gpu/lld/%s" % rule["key"], "trigger_prototype")
-        render_dependencies(element, definition, index)
-        add_tags(element, [("scope", definition["scope"])])
-
-    graph_container = sub(rule_element, "graph_prototypes")
-    for name, graph_items in GPU_GRAPH_PROTOTYPES:
-        graph = sub(graph_container, "graph_prototype")
-        sub(graph, "uuid", make_uuid("gpu/graph_prototype", name))
-        sub(graph, "name", name)
-        render_graph_items(graph, graph_items, host=GPU_TEMPLATE)
-
-    sub(sub(rule_element, "master_item"), "key", rule["master"])
-    add_preprocessing(rule_element, [("JSONPATH", [rule["path"]], "DISCARD_VALUE")])
-
-    macro_paths = sub(rule_element, "lld_macro_paths")
-    for macro, path in rule["macros"]:
-        entry = sub(macro_paths, "lld_macro_path")
-        sub(entry, "lld_macro", macro)
-        sub(entry, "path", path)
-
-    filter_element = sub(rule_element, "filter")
-    sub(filter_element, "evaltype", "AND")
-    conditions = sub(filter_element, "conditions")
-    for position, (macro, operator, value) in enumerate(rule["filters"]):
-        condition = sub(conditions, "condition")
-        sub(condition, "macro", macro)
-        sub(condition, "value", value)
-        sub(condition, "operator", operator)
-        sub(condition, "formulaid", chr(ord("A") + position))
-
-    valuemaps = sub(template, "valuemaps")
-    for name, mappings in VALUE_MAPS:
-        if name != "Slurm yes/no":     # the only one this template uses
-            continue
-        valuemap = sub(valuemaps, "valuemap")
-        sub(valuemap, "uuid", make_uuid("gpu/valuemap", name))
-        sub(valuemap, "name", name)
-        container = sub(valuemap, "mappings")
-        for value, newvalue in mappings:
-            mapping = sub(container, "mapping")
-            sub(mapping, "value", value)
-            sub(mapping, "newvalue", newvalue)
-
-    macros = sub(template, "macros")
-    for macro, value, description in GPU_MACROS:
-        entry = sub(macros, "macro")
-        sub(entry, "macro", macro)
-        sub(entry, "value", value)
-        sub(entry, "description", description)
-
-    dashboards = sub(template, "dashboards")
-    render_dashboard(dashboards, GPU_DASHBOARD, host=GPU_TEMPLATE,
-                     uuid_scope="gpu/dashboard")
-
-    add_tags(template, [("class", "software"), ("target", "slurm")])
-
-    triggers_element = sub(root, "triggers")
-    index = dict((trigger["id"], trigger) for trigger in GPU_TRIGGERS)
-    for definition in GPU_TRIGGERS:
-        element = render_trigger(triggers_element, definition, "gpu/trigger")
-        render_dependencies(element, definition, index)
-        add_tags(element, [("scope", definition["scope"])])
-
-    graphs_element = sub(root, "graphs")
-    for name, graph_items in GPU_GRAPHS:
-        graph = sub(graphs_element, "graph")
-        sub(graph, "uuid", make_uuid("gpu/graph", name))
-        sub(graph, "name", name)
-        render_graph_items(graph, graph_items, host=GPU_TEMPLATE)
-
-    return root
-
-
 def indent(element, level=0):
     padding = "\n" + "    " * level
     if len(element):
@@ -2481,35 +2102,28 @@ def indent(element, level=0):
             element.tail = padding
 
 
-def write_export(root, path):
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    default_output = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "templates", "slurm_cluster_7.0.xml")
+    parser.add_argument("-o", "--output", default=default_output,
+                        help="where to write the template (default: %s)" % default_output)
+    args = parser.parse_args(argv)
+
+    root = build()
     indent(root)
     tree = ET.ElementTree(root)
-    directory = os.path.dirname(os.path.abspath(path))
+
+    directory = os.path.dirname(os.path.abspath(args.output))
     if directory and not os.path.isdir(directory):
         os.makedirs(directory)
-    with open(path, "wb") as handle:
+    with open(args.output, "wb") as handle:
         handle.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
         tree.write(handle, encoding="utf-8", xml_declaration=False)
         handle.write(b"\n")
-    sys.stderr.write("wrote %s\n" % path)
 
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    templates = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
-    default_output = os.path.join(templates, "slurm_cluster_7.0.xml")
-    default_gpu_output = os.path.join(templates, "slurm_gpu_node_7.0.xml")
-    parser.add_argument("-o", "--output", default=default_output,
-                        help="where to write the cluster template "
-                             "(default: %s)" % default_output)
-    parser.add_argument("--gpu-output", default=default_gpu_output,
-                        help="where to write the GPU node template "
-                             "(default: %s)" % default_gpu_output)
-    args = parser.parse_args(argv)
-
-    write_export(build(), args.output)
-    write_export(build_gpu_node(), args.gpu_output)
+    sys.stderr.write("wrote %s\n" % args.output)
     return 0
 
 

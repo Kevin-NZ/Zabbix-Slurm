@@ -21,7 +21,6 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TEMPLATE = os.path.join(ROOT, "templates", "slurm_cluster_7.0.xml")
-GPU_TEMPLATE = os.path.join(ROOT, "templates", "slurm_gpu_node_7.0.xml")
 BUILDER = os.path.join(ROOT, "tools", "build_template.py")
 
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -72,15 +71,12 @@ class ShippedTemplateTest(TemplateTestCase):
         directory = tempfile.mkdtemp(prefix="slurm-template-build")
         try:
             generated = os.path.join(directory, "template.xml")
-            generated_gpu = os.path.join(directory, "gpu.xml")
-            subprocess.check_call([sys.executable, BUILDER, "-o", generated,
-                                   "--gpu-output", generated_gpu],
+            subprocess.check_call([sys.executable, BUILDER, "-o", generated],
                                   stderr=subprocess.DEVNULL)
-            for built, committed in ((generated, TEMPLATE), (generated_gpu, GPU_TEMPLATE)):
-                with open(built) as handle, open(committed) as original:
-                    self.assertEqual(handle.read(), original.read(),
-                                     "%s is out of date, run: "
-                                     "python3 tools/build_template.py" % committed)
+            with open(generated) as handle:
+                self.assertEqual(handle.read(), self.xml,
+                                 "templates/slurm_cluster_7.0.xml is out of date, "
+                                 "run: python3 tools/build_template.py")
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
@@ -90,9 +86,8 @@ class ShippedTemplateTest(TemplateTestCase):
             first = os.path.join(directory, "first.xml")
             second = os.path.join(directory, "second.xml")
             for output in (first, second):
-                subprocess.check_call(
-                    [sys.executable, BUILDER, "-o", output,
-                     "--gpu-output", output + ".gpu"], stderr=subprocess.DEVNULL)
+                subprocess.check_call([sys.executable, BUILDER, "-o", output],
+                                      stderr=subprocess.DEVNULL)
             with open(first) as first_handle, open(second) as second_handle:
                 self.assertEqual(first_handle.read(), second_handle.read())
         finally:
@@ -281,85 +276,6 @@ class ShippedTemplateTest(TemplateTestCase):
         rule = self.find(tree, ".//discovery_rule",
                          lambda element: element.find("key").text == "slurm.reservations.discovery")
         self.assertEqual(rule.find("lifetime").text, "1d")
-
-
-class GpuTemplateTest(TemplateTestCase):
-    """The GPU node template, linked to compute nodes rather than the cluster."""
-
-    @classmethod
-    def setUpClass(cls):
-        super(GpuTemplateTest, cls).setUpClass()
-        cls.tree = ET.parse(GPU_TEMPLATE)
-
-    def test_is_valid(self):
-        with open(GPU_TEMPLATE) as handle:
-            errors, _ = self.validate_xml(handle.read())
-        self.assertEqual(errors, [])
-
-    def test_is_a_separate_template(self):
-        template = self.tree.find("./templates/template")
-        self.assertEqual(template.find("template").text,
-                         "Slurm GPU node by Zabbix agent")
-        # It must not collide with the cluster template's items.
-        cluster = set(item.find("key").text
-                      for item in ET.parse(TEMPLATE).findall(".//items/item"))
-        gpu = set(item.find("key").text for item in self.tree.findall(".//items/item"))
-        self.assertEqual(cluster & gpu, set())
-
-    def test_one_agent_check(self):
-        polled = [item for item in self.tree.findall(".//items/item")
-                  if item.find("./master_item") is None]
-        self.assertEqual([item.find("key").text for item in polled], ["slurm.gpu"])
-
-    def test_reports_allocation_and_utilisation(self):
-        keys = set(item.find("key").text for item in self.tree.findall(".//items/item"))
-        for expected in ("slurm.gpu.allocated", "slurm.gpu.utilization.mean",
-                         "slurm.gpu.allocated_idle", "slurm.gpu.busy",
-                         "slurm.gpu.allocation"):
-            self.assertIn(expected, keys)
-
-    def test_the_graph_compares_the_two(self):
-        graph = self.find(self.tree, "./graphs/graph",
-                          lambda element: "Allocation against utilisation"
-                          in element.find("name").text)
-        keys = [item.find("key").text
-                for item in graph.findall("./graph_items/graph_item/item")]
-        self.assertIn("slurm.gpu.allocated", keys)
-        self.assertIn("slurm.gpu.utilization.mean", keys)
-        self.assertIn("slurm.gpu.allocated_idle", keys)
-
-    def test_alerts_on_allocated_but_idle(self):
-        trigger = self.find(self.tree, "./triggers/trigger",
-                            lambda element: "allocated but idle"
-                            in element.find("name").text)
-        self.assertIn("slurm.gpu.allocated_idle", trigger.find("expression").text)
-        self.assertIn("{$SLURM.GPU.IDLE.TIME}", trigger.find("expression").text)
-
-    def test_discovery_filters_on_a_string_index(self):
-        """A JSONPath filter comparing to '0' never matches a numeric 0."""
-        rule = self.find(self.tree, ".//discovery_rule",
-                         lambda element: element.find("key").text == "slurm.gpu.discovery")
-        path = self.find(rule, "./lld_macro_paths/lld_macro_path",
-                         lambda element: element.find("lld_macro").text == "{#GPU}")
-        self.assertEqual(path.find("path").text, "$.id")
-        prototype = self.find(
-            self.tree, ".//item_prototype",
-            lambda element: element.find("key").text ==
-            "slurm.gpu.device.utilization[{#GPU}]")
-        self.assertIn("@.id=='{#GPU}'",
-                      prototype.find("./preprocessing/step/parameters/parameter").text)
-
-    def test_expressions_reference_the_gpu_template(self):
-        for trigger in (self.tree.findall("./triggers/trigger") +
-                        self.tree.findall(".//trigger_prototype")):
-            self.assertIn("/Slurm GPU node by Zabbix agent/",
-                          trigger.find("expression").text)
-
-    def test_uuids_do_not_collide_with_the_cluster_template(self):
-        cluster = set(element.text for element in ET.parse(TEMPLATE).iter("uuid"))
-        gpu = set(element.text for element in self.tree.iter("uuid"))
-        # The shared template group is deliberately the same object.
-        self.assertEqual(cluster & gpu, set(["a571c0d144b14fd4a87a9d9b2aa9fcd6"]))
 
 
 class ValidatorDetectsFaultsTest(TemplateTestCase):

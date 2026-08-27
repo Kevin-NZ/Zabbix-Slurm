@@ -30,7 +30,6 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DEFAULT_TEMPLATE = os.path.join(ROOT, "templates", "slurm_cluster_7.0.xml")
-GPU_TEMPLATE_PATH = os.path.join(ROOT, "templates", "slurm_gpu_node_7.0.xml")
 COLLECTOR = os.path.join(ROOT, "bin", "slurm_zabbix.py")
 FAKEBIN = os.path.join(ROOT, "tests", "fakebin")
 
@@ -147,11 +146,10 @@ class Validator(object):
 
         # Sample entity names for resolving prototype paths against real data.
         self.samples = dict(
-            ("{#%s}" % macro, [str(entry.get("id", entry.get("name")))
-                               for entry in document.get(key, [])])
+            ("{#%s}" % macro, [entry["name"] for entry in document.get(key, [])])
             for macro, key in (("PARTITION", "partitions"), ("QOS", "qos"),
                                ("NODE", "nodes"), ("LICENSE", "licenses"),
-                               ("RESERVATION", "reservations"), ("GPU", "devices")))
+                               ("RESERVATION", "reservations")))
 
     # -- helpers ------------------------------------------------------------
 
@@ -564,10 +562,9 @@ class Validator(object):
         }
 
 
-def collect(mode, *extra):
+def collect(mode):
     output = subprocess.check_output(
-        [sys.executable, COLLECTOR, "--mode", mode, "--slurm-bin-dir", FAKEBIN,
-         "--no-cache"] + list(extra),
+        [sys.executable, COLLECTOR, "--mode", mode, "--slurm-bin-dir", FAKEBIN, "--no-cache"],
         universal_newlines=True)
     return json.loads(output)
 
@@ -580,9 +577,6 @@ def sample_document():
     """
     document = collect("all")
     document["accounting"] = collect("accounting").get("accounting", {})
-    gpu = collect("gpu", "--node", "gpunode1")
-    document["gpu"] = gpu.get("gpu", {})
-    document["devices"] = gpu.get("devices", [])
     return document
 
 
@@ -594,18 +588,10 @@ def validate(path=DEFAULT_TEMPLATE, document=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    paths = argv or [DEFAULT_TEMPLATE, GPU_TEMPLATE_PATH]
-    document = sample_document()
-    failures = 0
-    for path in paths:
-        failures += validate_one(path, document)
-    return 1 if failures else 0
+    path = argv[0] if argv else DEFAULT_TEMPLATE
 
+    validator, errors, warnings = validate(path)
 
-def validate_one(path, document):
-    validator, errors, warnings = validate(path, document)
-
-    print("== %s" % os.path.basename(path))
     for key, value in sorted(validator.summary().items()):
         print("%-20s %d" % (key, value))
     print("")
@@ -616,9 +602,9 @@ def validate_one(path, document):
         print("ERROR:   %s" % error)
 
     if errors:
-        print("\n%d error(s) found in %s\n" % (len(errors), path))
+        print("\n%d error(s) found in %s" % (len(errors), path))
         return 1
-    print("%s is valid\n" % path)
+    print("%s is valid" % path)
     return 0
 
 

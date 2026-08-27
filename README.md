@@ -29,10 +29,8 @@ because it is the only collection that queries the accounting database.
 | Path | Description |
 | --- | --- |
 | `bin/slurm_zabbix.py` | Collector; queries Slurm and prints JSON |
-| `templates/slurm_cluster_7.0.xml` | The cluster template, ready to import |
-| `templates/slurm_gpu_node_7.0.xml` | The GPU node template: utilisation against allocation |
-| `agent/slurm.conf` | Zabbix agent UserParameters for the cluster host |
-| `agent/slurm-gpu.conf` | Zabbix agent UserParameter for GPU compute nodes |
+| `templates/slurm_cluster_7.0.xml` | The Zabbix 7.0 template, ready to import |
+| `agent/slurm.conf` | Zabbix agent UserParameters |
 | `systemd/` | Timer that refreshes the collector cache |
 | `install.sh` | Installs the collector, the cache directory and the agent config |
 | `tools/build_template.py` | Generates the template XML from its declarative definition |
@@ -137,40 +135,6 @@ then enable the **Slurm: Get accounting data** item on the host. Every
 accounting metric depends on that one item, so enabling it switches the whole
 feature on. It runs on its own 15 minute schedule with its own cache, so it
 never slows down the one minute cluster poll.
-
-### GPU utilisation (optional)
-
-Slurm knows which GPUs it handed to jobs. It has **no idea what those GPUs are
-doing**, and nothing on the controller can find out — device utilisation can only
-be measured where the GPUs are. That is why this is a second template, linked to
-the compute nodes:
-
-```sh
-sudo ./install.sh --gpu        # on each GPU node
-```
-
-then import `templates/slurm_gpu_node_7.0.xml` and link **Slurm GPU node by
-Zabbix agent** to those nodes. It runs `--mode gpu`, which pairs `nvidia-smi`
-with Slurm's own allocation for the node and reports both:
-
-| Question | Item |
-| --- | --- |
-| How many GPUs has Slurm given out? | *GPUs allocated by Slurm* |
-| How many are actually working? | *GPUs busy*, *Utilisation, mean* |
-| **How many are held but idle?** | *GPUs allocated but idle* |
-
-The last one is the answer to "the cluster says the GPUs are allocated but they
-look idle": a job holding a GPU without using it, which is capacity nobody can
-have. Per GPU the same comparison is discovered, so you can see which device it
-is. The *Allocation against utilisation* graph puts the two lines together.
-
-A GPU counts as idle below 5%; change it with `--gpu-idle-below N`. The alert
-needs the condition to hold for `{$SLURM.GPU.IDLE.TIME}` (30 minutes by default)
-so that a job pausing between epochs does not page anyone.
-
-Needs `nvidia-smi` and the Slurm client commands on the node. Allocation is
-looked up under the node's short hostname; if Slurm knows it by another name,
-pass `--node`.
 
 ## What is collected
 
@@ -467,9 +431,9 @@ instead of going unsupported.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -v    # 210 tests, no Slurm required
-python3 tools/build_template.py             # regenerate both templates
-python3 tools/validate_template.py          # check both generated templates
+python3 -m unittest discover -s tests -v    # 126 tests, no Slurm required
+python3 tools/build_template.py             # regenerate templates/slurm_cluster_7.0.xml
+python3 tools/validate_template.py          # check the generated template
 make check                                  # all three
 ```
 
@@ -529,8 +493,8 @@ expectations.
   untyped (`gpu:4`) and multi-type nodes all work, and non-GPU resources such as
   `mps` and `shard` are ignored. Note this is *allocation*, not device
   utilisation: it says how many GPUs Slurm has handed to jobs, not how busy the
-  silicon is. For that, link the GPU node template to the compute nodes, which
-  reports both numbers side by side.
+  silicon is. For the latter, monitor the nodes themselves (DCGM or
+  nvidia-smi).
 
 ## License
 

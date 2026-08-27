@@ -79,11 +79,10 @@ class InstallScriptTest(unittest.TestCase):
 
     def test_writes_both_master_item_keys_in_both_modes(self):
         written = re.findall(r"^UserParameter=([^,]+),", self.script, re.MULTILINE)
-        # Both keys for the direct mode, both again for --timer, the accounting
-        # key behind --accounting and the GPU key behind --gpu.
+        # Both keys for the direct mode, both again for --timer, and the
+        # accounting key once behind --accounting.
         self.assertEqual(sorted(written),
-                         sorted(list(MASTER_KEYS) * 2 +
-                                ["slurm.accounting", "slurm.gpu"]))
+                         sorted(list(MASTER_KEYS) * 2 + ["slurm.accounting"]))
         self.assertIn("--cache-only", self.script)
         self.assertIn("--cache-ttl", self.script)
 
@@ -96,41 +95,9 @@ class InstallScriptTest(unittest.TestCase):
         self.assertIn("UserParameter=slurm.accounting", guard.group(1))
 
 
-class GpuAgentConfigTest(unittest.TestCase):
-    """The GPU node config is the one part that runs on the compute nodes."""
-
-    def setUp(self):
-        self.conf = read("agent", "slurm-gpu.conf")
-
-    def test_defines_the_gpu_key(self):
-        defined = re.findall(r"^UserParameter=([^,]+),", self.conf, re.MULTILINE)
-        self.assertEqual(defined, ["slurm.gpu"])
-        self.assertIn("--mode gpu", self.conf)
-
-    def test_documents_the_agent2_directory(self):
-        self.assertIn(AGENT2_INCLUDE_DIR + "/slurm-gpu.conf", self.conf)
-
-    def test_says_where_it_belongs(self):
-        self.assertIn("compute nodes", self.conf)
-
-    def test_installer_keeps_the_two_host_kinds_apart(self):
-        """A GPU node gets the GPU key only, not the cluster wide ones."""
-        script = read("install.sh")
-        guard = re.search(r'if \[ "\$USE_GPU" -eq 1 \]; then(.+?)\nelse\n',
-                          script, re.DOTALL)
-        self.assertIsNotNone(guard, "GPU branch not found")
-        self.assertIn("UserParameter=slurm.gpu", guard.group(1))
-        self.assertNotIn("UserParameter=slurm.cluster", guard.group(1))
-
-
 class DocumentationTest(unittest.TestCase):
     def test_readme_documents_the_agent2_path(self):
         self.assertIn(AGENT2_INCLUDE_DIR, read("README.md"))
-
-    def test_readme_explains_the_gpu_template(self):
-        readme = read("README.md")
-        self.assertIn("slurm_gpu_node_7.0.xml", readme)
-        self.assertIn("--mode gpu", readme)
 
     def test_systemd_unit_matches_the_installed_collector_path(self):
         unit = read("systemd", "zabbix-slurm-collector.service")
