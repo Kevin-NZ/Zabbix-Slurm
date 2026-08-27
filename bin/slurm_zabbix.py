@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,9 @@ DEFAULT_TIMEOUT = 25
 DEFAULT_LOCK_TIMEOUT = 20
 DEFAULT_ACCOUNTING_TTL = 870
 DEFAULT_ACCOUNTING_WINDOW = 3600
+# A GPU below this percentage is treated as doing nothing.  Anything above a few
+# percent is normal idle noise from the driver.
+DEFAULT_GPU_IDLE_BELOW = 5
 
 # Terminal job states asked of sacct, and the buckets they are counted in.
 SACCT_STATES = "CD,F,CA,TO,NF,OOM,PR"
@@ -204,6 +208,31 @@ _GRES_RE = re.compile(
     r"(?::(?P<type>[A-Za-z0-9_.+\-]+))?"
     r":(?P<count>\d+)"
     r"(?:\([^)]*\))?")
+
+
+_GRES_IDX_RE = re.compile(r"\(IDX:([^)]*)\)")
+
+
+def parse_gres_indexes(value):
+    """Device indexes out of a GresUsed field.
+
+    ``gpu:a100:2(IDX:0-1)`` and ``gpu:a100:1(IDX:0,3)`` say which GPUs Slurm
+    handed to jobs, which is what lets an allocated device be lined up against
+    what that device is actually doing.
+    """
+    indexes = set()
+    if not value:
+        return indexes
+    for group in _GRES_IDX_RE.findall(value):
+        for part in group.split(","):
+            part = part.strip()
+            if "-" in part:
+                start, _, end = part.partition("-")
+                if start.strip().isdigit() and end.strip().isdigit():
+                    indexes.update(range(int(start), int(end) + 1))
+            elif part.isdigit():
+                indexes.add(int(part))
+    return indexes
 
 
 def parse_gres(value):
@@ -998,6 +1027,157 @@ class SlurmCollector(object):
             })
         return licenses
 
+    # -- GPU nodes -----------------------------------------------------------
+
+    NVIDIA_SMI_FIELDS = ("index,name,utilization.gpu,utilization.memory,"
+                         "memory.total,memory.used,temperature.gpu,power.draw")
+
+    def collect_gpu_devices(self):
+        """``nvidia-smi`` -> what each GPU on this node is actually doing.
+
+        Slurm knows which GPUs it handed to jobs, never how busy they are, so
+        this has to run on the GPU node itself.
+        """
+        devices = []
+        output = self.run(["nvidia-smi", "--query-gpu=" + self.NVIDIA_SMI_FIELDS,
+                           "--format=csv,noheader,nounits"])
+        if output is None:
+            return devices
+        for line in output.splitlines():
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) < 8 or not fields[0].isdigit():
+                continue
+            total = to_float(fields[4], 0) or 0
+            used = to_float(fields[5], 0) or 0
+            devices.append({
+                "index": int(fields[0]),
+                # Discovery filters on a string, so the index is offered as one
+                # too: a JSONPath filter comparing to '0' never matches a
+                # numeric 0.
+                "id": fields[0],
+                "name": fields[1],
+                "utilization": to_float(fields[2], 0) or 0,
+                "memory_utilization": to_float(fields[3], 0) or 0,
+                "memory_total_bytes": int(total * MB),
+                "memory_used_bytes": int(used * MB),
+                "memory_used_pct": percent(used, total),
+                "temperature": to_float(fields[6]),
+                # power.draw reads [N/A] on cards that cannot report it.
+                "power": to_float(fields[7]),
+            })
+        return devices
+
+    def collect_node_allocation(self, node_name):
+        """Which of this node's GPUs Slurm has handed out, and to how many."""
+        result = {"gpus_total": 0, "gpus_allocated": 0, "indexes": set()}
+        output = self.run(["scontrol", "show", "node", node_name], ignore_errors=True)
+        gres_used = ""
+        if output:
+            record = parse_kv_line(" ".join(output.split("\n")))
+            if record.get("NodeName"):
+                node = self._build_node(record)
+                result["gpus_total"] = node["gpus_total"]
+                result["gpus_allocated"] = node["gpus_allocated"]
+                gres_used = record.get("GresUsed", "")
+                if not node.pop("_gpu_alloc_known", True):
+                    gres_used = ""
+
+        if not gres_used:
+            # The same gap as on the cluster side: several releases print no
+            # GresUsed at all, and sinfo answers instead.
+            gres_used = self.collect_gres_used_raw(node_name)
+            if gres_used:
+                result["gpus_allocated"] = max(result["gpus_allocated"],
+                                               parse_gres(gres_used).get("gpu", 0))
+
+        result["indexes"] = parse_gres_indexes(gres_used)
+        return result
+
+    def collect_gres_used_raw(self, node_name):
+        """The raw GresUsed string for one node, from sinfo."""
+        output = self.run(
+            ["sinfo", "--Node", "--noheader", "--nodes=" + node_name,
+             "--Format=NodeList:100,GresUsed:200"], ignore_errors=True)
+        if output is None:
+            return ""
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == node_name:
+                return fields[1]
+        return ""
+
+    def collect_gpu_document(self, node_name, idle_below=DEFAULT_GPU_IDLE_BELOW):
+        """Per device utilisation next to what Slurm allocated on this node."""
+        started = time.time()
+        self.now = int(started)
+
+        devices = self.collect_gpu_devices()
+        allocation = self.collect_node_allocation(node_name)
+
+        # Slurm names the allocated devices when it can; when it only gives a
+        # count, the lowest indexes are assumed, which is how Slurm assigns them.
+        allocated_indexes = allocation["indexes"]
+        if not allocated_indexes and allocation["gpus_allocated"]:
+            allocated_indexes = set(
+                device["index"] for device in
+                sorted(devices, key=lambda entry: entry["index"])
+                [:allocation["gpus_allocated"]])
+
+        utilisations = []
+        summary = {
+            "count": len(devices),
+            "allocated": allocation["gpus_allocated"],
+            "allocated_idle": 0,
+            "busy": 0,
+            "idle_below": idle_below,
+            "memory_total_bytes": 0,
+            "memory_used_bytes": 0,
+            "utilization_mean": 0.0,
+            "utilization_max": 0.0,
+            "temperature_max": 0,
+            "power": 0.0,
+        }
+
+        for device in devices:
+            device["allocated"] = 1 if device["index"] in allocated_indexes else 0
+            device["allocated_idle"] = 1 if (device["allocated"] and
+                                             device["utilization"] < idle_below) else 0
+            utilisations.append(device["utilization"])
+            summary["allocated_idle"] += device["allocated_idle"]
+            if device["utilization"] >= idle_below:
+                summary["busy"] += 1
+            summary["memory_total_bytes"] += device["memory_total_bytes"]
+            summary["memory_used_bytes"] += device["memory_used_bytes"]
+            if device["temperature"] is not None:
+                summary["temperature_max"] = max(summary["temperature_max"],
+                                                 int(device["temperature"]))
+            if device["power"] is not None:
+                summary["power"] += device["power"]
+
+        if utilisations:
+            summary["utilization_mean"] = round(sum(utilisations) / len(utilisations), 2)
+            summary["utilization_max"] = max(utilisations)
+        summary["memory_utilization"] = percent(summary["memory_used_bytes"],
+                                                summary["memory_total_bytes"])
+        summary["power"] = round(summary["power"], 2)
+        # What the question "allocated but idle" is really asking.
+        summary["allocation"] = percent(summary["allocated"], len(devices))
+        summary["node"] = node_name
+
+        return prune_nulls({
+            "meta": {
+                "timestamp": self.now,
+                "age": 0,
+                "duration": round(time.time() - started, 3),
+                "cached": 0,
+                "version": __version__,
+                "errors": "; ".join(self.errors),
+                "error_count": len(self.errors),
+            },
+            "gpu": summary,
+            "devices": devices,
+        })
+
     def collect_accounting(self, window=DEFAULT_ACCOUNTING_WINDOW):
         """``sacct`` -> throughput of the jobs that finished in the last window.
 
@@ -1570,7 +1750,7 @@ def slice_document(document, mode):
     ``cluster`` deliberately omits the (potentially very large) node array so
     that the frequently polled master item stays small.
     """
-    if mode in ("all", "accounting"):
+    if mode in ("all", "accounting", "gpu"):
         return document
     if mode == "nodes":
         return {"meta": document.get("meta", {}), "nodes": document.get("nodes", [])}
@@ -1612,9 +1792,11 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Collect Slurm cluster metrics and print them as JSON for Zabbix.")
     parser.add_argument("--mode", default="cluster",
-                        choices=("cluster", "nodes", "all", "accounting"),
+                        choices=("cluster", "nodes", "all", "accounting", "gpu"),
                         help="which part of the document to print (default: cluster). "
-                             "'accounting' queries sacct and is cached separately")
+                             "'accounting' queries sacct and is cached separately; "
+                             "'gpu' runs on a GPU node and reports what its GPUs are "
+                             "doing next to what Slurm allocated")
     parser.add_argument("--cache-file", default=DEFAULT_CACHE_FILE,
                         help="cache location (default: %s)" % DEFAULT_CACHE_FILE)
     parser.add_argument("--cache-ttl", type=int, default=DEFAULT_CACHE_TTL,
@@ -1642,6 +1824,11 @@ def build_parser():
                         help="directory holding the Slurm client commands")
     parser.add_argument("--no-sacctmgr", action="store_true",
                         help="skip slurmdbd/QOS queries on clusters without accounting")
+    parser.add_argument("--node", metavar="NAME",
+                        help="Slurm node name for --mode gpu (default: this host)")
+    parser.add_argument("--gpu-idle-below", type=int, default=DEFAULT_GPU_IDLE_BELOW,
+                        help="GPU utilisation (%%) below which a device counts as idle "
+                             "(default: %d)" % DEFAULT_GPU_IDLE_BELOW)
     parser.add_argument("--explain-node", metavar="NODE",
                         help="show how one node's GPU numbers were derived from the "
                              "Slurm output, and exit")
@@ -1719,6 +1906,16 @@ def accounting_cache_file(cache_file):
     return cache_file + ".accounting"
 
 
+def gpu_cache_file(cache_file):
+    """GPU node data is collected on the node, not on the controller."""
+    return cache_file + ".gpu"
+
+
+def local_node_name():
+    """Slurm node name of the host we are running on."""
+    return socket.gethostname().split(".")[0]
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     now = int(time.time())
@@ -1729,8 +1926,13 @@ def main(argv=None):
             args.explain_node)
 
     accounting = args.mode == "accounting"
-    cache_file = accounting_cache_file(args.cache_file) if accounting else args.cache_file
-    ttl = args.accounting_ttl if accounting else args.cache_ttl
+    gpu = args.mode == "gpu"
+    if accounting:
+        cache_file, ttl = accounting_cache_file(args.cache_file), args.accounting_ttl
+    elif gpu:
+        cache_file, ttl = gpu_cache_file(args.cache_file), args.cache_ttl
+    else:
+        cache_file, ttl = args.cache_file, args.cache_ttl
 
     def collect():
         collector = SlurmCollector(
@@ -1740,6 +1942,9 @@ def main(argv=None):
         )
         if accounting:
             return collector.collect_accounting_document(args.accounting_window)
+        if gpu:
+            return collector.collect_gpu_document(args.node or local_node_name(),
+                                                  args.gpu_idle_below)
         return collector.collect()
 
     if args.cache_only:

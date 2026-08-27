@@ -651,6 +651,157 @@ class GresUsedFallbackTest(unittest.TestCase):
         self.assertEqual(collector.fill_gpu_allocation(plain), plain)
 
 
+class GpuIndexTest(unittest.TestCase):
+    def test_single_index(self):
+        self.assertEqual(sz.parse_gres_indexes("gpu:a100:1(IDX:0)"), set([0]))
+
+    def test_range(self):
+        self.assertEqual(sz.parse_gres_indexes("gpu:a100:5(IDX:0-4)"), set(range(5)))
+
+    def test_mixed_list_and_range(self):
+        self.assertEqual(sz.parse_gres_indexes("gpu:a100:3(IDX:0-1,3)"), set([0, 1, 3]))
+
+    def test_nothing_allocated(self):
+        self.assertEqual(sz.parse_gres_indexes("gpu:v100:0(IDX:N/A)"), set())
+        self.assertEqual(sz.parse_gres_indexes("(null)"), set())
+        self.assertEqual(sz.parse_gres_indexes(""), set())
+
+
+class GpuUtilisationTest(unittest.TestCase):
+    """Utilisation from nvidia-smi, next to what Slurm allocated."""
+
+    @classmethod
+    def setUpClass(cls):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        cls.document = collector.collect_gpu_document("gpunode1")
+        cls.devices = dict((device["index"], device) for device in cls.document["devices"])
+        cls.summary = cls.document["gpu"]
+
+    def test_every_device_is_reported(self):
+        self.assertEqual(len(self.devices), 4)
+        self.assertEqual(self.summary["count"], 4)
+
+    def test_device_metrics(self):
+        busy = self.devices[1]
+        self.assertAlmostEqual(busy["utilization"], 97.0)
+        self.assertEqual(busy["memory_used_bytes"], 32768 * sz.MB)
+        self.assertAlmostEqual(busy["memory_used_pct"], 80.0)
+        self.assertAlmostEqual(busy["temperature"], 71.0)
+        self.assertAlmostEqual(busy["power"], 249.80)
+        self.assertEqual(busy["name"], "NVIDIA A100-PCIE-40GB")
+
+    def test_allocation_comes_from_slurm(self):
+        # GresUsed says gpu:a100:3(IDX:0-1,3)
+        self.assertEqual(self.summary["allocated"], 3)
+        self.assertEqual([index for index, device in sorted(self.devices.items())
+                          if device["allocated"]], [0, 1, 3])
+
+    def test_allocated_but_idle_is_the_point(self):
+        """Device 0 is allocated to a job and doing nothing."""
+        self.assertEqual(self.devices[0]["allocated"], 1)
+        self.assertAlmostEqual(self.devices[0]["utilization"], 0.0)
+        self.assertEqual(self.devices[0]["allocated_idle"], 1)
+        self.assertEqual(self.summary["allocated_idle"], 1)
+
+    def test_an_idle_but_unallocated_device_is_not_waste(self):
+        self.assertEqual(self.devices[2]["allocated"], 0)
+        self.assertEqual(self.devices[2]["allocated_idle"], 0)
+
+    def test_busy_devices(self):
+        self.assertEqual(self.summary["busy"], 2)      # 97% and 55%
+        self.assertAlmostEqual(self.summary["utilization_max"], 97.0)
+        self.assertAlmostEqual(self.summary["utilization_mean"], 38.0)
+
+    def test_allocation_against_utilisation(self):
+        """The comparison the whole mode exists for."""
+        self.assertAlmostEqual(self.summary["allocation"], 75.0)
+        self.assertLess(self.summary["utilization_mean"], self.summary["allocation"])
+
+    def test_idle_threshold_is_configurable(self):
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        # At a 60% threshold the 55% device counts as idle too.
+        summary = collector.collect_gpu_document("gpunode1", idle_below=60)["gpu"]
+        self.assertEqual(summary["busy"], 1)
+        self.assertEqual(summary["allocated_idle"], 2)
+        self.assertEqual(summary["idle_below"], 60)
+
+    def test_totals(self):
+        self.assertEqual(self.summary["memory_total_bytes"], 4 * 40960 * sz.MB)
+        self.assertAlmostEqual(self.summary["power"], 510.37)
+        self.assertEqual(self.summary["temperature_max"], 71)
+
+    def test_devices_carry_a_string_id_for_discovery(self):
+        """A JSONPath filter comparing to '0' never matches a numeric 0."""
+        for device in self.document["devices"]:
+            self.assertEqual(device["id"], str(device["index"]))
+
+    def test_document_shape(self):
+        self.assertEqual(sorted(self.document), ["devices", "gpu", "meta"])
+        self.assertEqual(self.document["meta"]["error_count"], 0)
+
+    def test_allocation_without_index_information(self):
+        """When Slurm gives only a count, the lowest devices are assumed."""
+        collector = sz.SlurmCollector(bin_dir=FAKEBIN)
+        devices = collector.collect_gpu_devices()
+        for device in devices:
+            device["allocated"] = 0
+        indexes = sz.parse_gres_indexes("gpu:a100:2")     # no IDX at all
+        self.assertEqual(indexes, set())
+        # aklppg32 reports one allocated GPU through sinfo with IDX:0.
+        summary = collector.collect_gpu_document("aklppg32")["gpu"]
+        self.assertEqual(summary["allocated"], 1)
+
+    def test_without_nvidia_smi(self):
+        empty = tempfile.mkdtemp(prefix="slurm-nogpu")
+        try:
+            collector = sz.SlurmCollector(bin_dir=empty)
+            document = collector.collect_gpu_document("gpunode1")
+            self.assertEqual(document["devices"], [])
+            self.assertEqual(document["gpu"]["count"], 0)
+            self.assertGreater(document["meta"]["error_count"], 0)
+            json.dumps(document)
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+
+class GpuModeCliTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="slurm-gpu-cli")
+        self.cache = os.path.join(self.directory, "cache.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def run_collector(self, *extra):
+        argv = [sys.executable, COLLECTOR, "--slurm-bin-dir", FAKEBIN,
+                "--cache-file", self.cache] + list(extra)
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True)
+        stdout, stderr = process.communicate()
+        return process.returncode, stdout, stderr
+
+    def test_gpu_mode_uses_its_own_cache(self):
+        code, stdout, stderr = self.run_collector("--mode", "gpu", "--node", "gpunode1")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["gpu"]["allocated_idle"], 1)
+        self.assertTrue(os.path.exists(sz.gpu_cache_file(self.cache)))
+        self.assertFalse(os.path.exists(self.cache))
+
+    def test_idle_threshold_option(self):
+        code, stdout, stderr = self.run_collector(
+            "--mode", "gpu", "--node", "gpunode1", "--gpu-idle-below", "60")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["gpu"]["allocated_idle"], 2)
+
+    def test_node_defaults_to_this_host(self):
+        code, stdout, stderr = self.run_collector("--mode", "gpu")
+        self.assertEqual(code, 0, stderr)
+        # No Slurm node of that name, so allocation is zero but devices report.
+        document = json.loads(stdout)
+        self.assertEqual(document["gpu"]["count"], 4)
+        self.assertEqual(document["gpu"]["node"], sz.local_node_name())
+
+
 class ExplainNodeTest(unittest.TestCase):
     """The diagnostic has to show the raw fields, not just the conclusion."""
 

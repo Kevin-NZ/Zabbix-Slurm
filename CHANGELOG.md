@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+* **GPU utilisation against allocation**, as a second template linked to the GPU
+  compute nodes: `templates/slurm_gpu_node_7.0.xml`. Slurm knows which GPUs it
+  handed to jobs and nothing about what they are doing, so device utilisation has
+  to be measured where the GPUs are. `--mode gpu` pairs `nvidia-smi` with the
+  node's Slurm allocation and reports both, including **GPUs allocated but
+  idle** — a job holding a GPU without using it — per node and per device, with
+  a trigger and a graph that put the two lines together. Slurm's `IDX` list says
+  which devices are allocated, so the comparison is per GPU rather than a count.
+  `install.sh --gpu` sets up the agent side.
 * **License monitoring.** A discovery rule over `scontrol show licenses` with
   total, used, free, reserved and usage per pool, plus a trigger that fires when
   a pool is exhausted *and* jobs are queueing for a license — the combination
