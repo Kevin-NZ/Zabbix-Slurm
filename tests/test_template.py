@@ -197,6 +197,35 @@ class ShippedTemplateTest(TemplateTestCase):
         # The raw pending count would include dependency-blocked jobs.
         self.assertNotRegex(expression, r"slurm\.jobs\.pending,")
 
+    def test_breakdown_graphs_are_stacked(self):
+        """A breakdown reads as a total only when the series are stacked."""
+        tree = ET.parse(TEMPLATE)
+        stacked = dict((graph.find("name").text, graph)
+                       for graph in tree.findall("./graphs/graph")
+                       if graph.find("type") is not None
+                       and graph.find("type").text == "STACKED")
+        self.assertIn("Slurm: Pending jobs by reason", stacked)
+        self.assertIn("Slurm: Jobs by state", stacked)
+
+        # Stacking only tells the truth for mutually exclusive series. "Nodes by
+        # state" mixes states with the not-responding flag, which overlaps them.
+        nodes = self.find(tree, "./graphs/graph",
+                          lambda element: element.find("name").text == "Slurm: Nodes by state")
+        self.assertIsNone(nodes.find("type"))
+
+    def test_the_pending_breakdown_covers_every_reason(self):
+        """A stacked graph missing a series would understate the total."""
+        sys.path.insert(0, os.path.join(ROOT, "bin"))
+        import slurm_zabbix as sz
+        tree = ET.parse(TEMPLATE)
+        graph = self.find(tree, "./graphs/graph",
+                          lambda element: element.find("name").text ==
+                          "Slurm: Pending jobs by reason")
+        keys = set(item.find("key").text
+                   for item in graph.findall("./graph_items/graph_item/item"))
+        self.assertEqual(keys, set("slurm.jobs.pending.%s" % bucket
+                                   for bucket in sz.PENDING_REASON_KEYS))
+
     def test_uses_the_standard_template_group_uuid(self):
         """Templates/Applications already exists in every Zabbix installation."""
         tree = ET.parse(TEMPLATE)

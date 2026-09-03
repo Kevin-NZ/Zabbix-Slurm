@@ -9075,6 +9075,7 @@ Requires the accounting collection, which is disabled by default.</description>
         <graph>
             <uuid>63816642ed82459dad0776b195305138</uuid>
             <name>Slurm: Jobs by state</name>
+            <type>STACKED</type>
             <graph_items>
                 <graph_item>
                     <sortorder>0</sortorder>
@@ -9116,11 +9117,20 @@ Requires the accounting collection, which is disabled by default.</description>
                         <key>slurm.jobs.configuring</key>
                     </item>
                 </graph_item>
+                <graph_item>
+                    <sortorder>5</sortorder>
+                    <color>8B8B8B</color>
+                    <item>
+                        <host>Slurm cluster by Zabbix agent</host>
+                        <key>slurm.jobs.other</key>
+                    </item>
+                </graph_item>
             </graph_items>
         </graph>
         <graph>
             <uuid>164e418e2a1044d59a7916c0216c94a5</uuid>
             <name>Slurm: Pending jobs by reason</name>
+            <type>STACKED</type>
             <graph_items>
                 <graph_item>
                     <sortorder>0</sortorder>

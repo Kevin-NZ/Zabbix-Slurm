@@ -1554,6 +1554,16 @@ for _rule in DISCOVERY_RULES:
 # Graphs
 # ---------------------------------------------------------------------------
 
+# Graphs whose series are mutually exclusive and add up to a meaningful total.
+# Stacking them makes the height of the graph the total, so the breakdown can be
+# read without adding the lines up by eye.  Only genuinely exclusive series
+# belong here: "Nodes by state" is deliberately absent because "not responding"
+# is a flag that overlaps the state counts, and stacking it would double count.
+STACKED_GRAPHS = frozenset([
+    "Slurm: Pending jobs by reason",
+    "Slurm: Jobs by state",
+])
+
 GRAPHS = [
     ("Slurm: Nodes by state", [
         ("slurm.nodes.idle", GREEN), ("slurm.nodes.allocated", BLUE),
@@ -1580,7 +1590,7 @@ GRAPHS = [
     ("Slurm: Jobs by state", [
         ("slurm.jobs.running", GREEN), ("slurm.jobs.pending", ORANGE),
         ("slurm.jobs.suspended", RED), ("slurm.jobs.completing", BLUE),
-        ("slurm.jobs.configuring", TEAL),
+        ("slurm.jobs.configuring", TEAL), ("slurm.jobs.other", GREY),
     ]),
     ("Slurm: Pending jobs by reason", [
         ("slurm.jobs.pending.resources", GREEN),
@@ -2081,6 +2091,8 @@ def build():
         graph = sub(graphs_element, "graph")
         sub(graph, "uuid", make_uuid("graph", name))
         sub(graph, "name", name)
+        if name in STACKED_GRAPHS:
+            sub(graph, "type", "STACKED")
         render_graph_items(graph, graph_items)
 
     return root

@@ -38,6 +38,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* *Pending jobs by reason* and *Jobs by state* are now **stacked** graphs. Their
+  series are mutually exclusive and add up to the total, so stacking makes the
+  height of the graph the total and the bands the breakdown — previously they
+  were separate lines and the total had to be added up by eye. *Nodes by state*
+  is deliberately left unstacked: it mixes the state counts with the
+  not-responding flag, which overlaps them, so stacking would double count.
+  *Jobs by state* also gained the missing "other states" series, so the stack is
+  the whole job count.
 * **Queue wait now measures only jobs the scheduler could start.** Both
   *Slurm: Jobs are waiting longer than N* and *Partition [P]: Jobs wait longer
   than expected* took the age of the oldest pending job, whatever it was waiting
