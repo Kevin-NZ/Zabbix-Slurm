@@ -1743,6 +1743,11 @@ DASHBOARDS = [
             graph_widget("Memory allocation", "Slurm: Memory allocation", 0, 15, width=24),
             graph_widget("GPU allocation", "Slurm: GPU allocation", 24, 15, width=24),
             graph_widget("Queue wait time", "Slurm: Queue wait time", 48, 15, width=24),
+            # The graphs above are averaged over whatever period the dashboard
+            # is showing; this reads the queue as it is right now, in Slurm's
+            # own words.
+            value_widget("Top pending reasons", "slurm.jobs.pending.top_reasons",
+                         0, 21, width=72),
         ]),
         ("Scheduler", [
             value_widget("slurmctld", "slurm.ctld.available", 0, 0),

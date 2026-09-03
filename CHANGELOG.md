@@ -36,6 +36,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   3.11 and 3.13, validates the template, fails if the committed XML no longer
   matches the builder, and runs ShellCheck over the shell scripts.
 
+* **Top pending reasons on the cluster dashboard.** The graphs on that page are
+  averaged over whatever range the time selector is set to, so a wide window
+  flattens a burst of pending jobs into a fraction and the breakdown stops
+  agreeing with the *Jobs pending* value widget beside it. The existing
+  *Top pending reasons* item is now a full width value widget under those
+  graphs: it reads the latest value and ignores the selector, so the queue's
+  actual composition — `Priority: 16, Resources: 3, JobHeldUser: 1` — is on the
+  page regardless of the range. The README now explains the difference.
+
 ### Changed
 
 * *Pending jobs by reason* and *Jobs by state* are now **stacked** graphs. Their

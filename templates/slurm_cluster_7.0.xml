@@ -7297,6 +7297,34 @@ This deliberately does not depend on the node being down: it is the escalation f
                                         </field>
                                     </fields>
                                 </widget>
+                                <widget>
+                                    <type>item</type>
+                                    <name>Top pending reasons</name>
+                                    <x>0</x>
+                                    <y>21</y>
+                                    <width>72</width>
+                                    <height>3</height>
+                                    <fields>
+                                        <field>
+                                            <type>ITEM</type>
+                                            <name>itemid.0</name>
+                                            <value>
+                                                <host>Slurm cluster by Zabbix agent</host>
+                                                <key>slurm.jobs.pending.top_reasons</key>
+                                            </value>
+                                        </field>
+                                        <field>
+                                            <type>INTEGER</type>
+                                            <name>show.0</name>
+                                            <value>1</value>
+                                        </field>
+                                        <field>
+                                            <type>INTEGER</type>
+                                            <name>show.1</name>
+                                            <value>2</value>
+                                        </field>
+                                    </fields>
+                                </widget>
                             </widgets>
                         </page>
                         <page>

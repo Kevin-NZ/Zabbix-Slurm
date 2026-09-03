@@ -226,6 +226,26 @@ class ShippedTemplateTest(TemplateTestCase):
         self.assertEqual(keys, set("slurm.jobs.pending.%s" % bucket
                                    for bucket in sz.PENDING_REASON_KEYS))
 
+    def test_the_cluster_page_reports_the_queue_as_it_is_now(self):
+        """The breakdown graph is aggregated; this widget is not.
+
+        Every graph on the page is averaged over the dashboard's time range,
+        which flattens a burst of pending jobs into a fraction. The reasons
+        item shows the current queue verbatim, so the two disagreeing is a
+        property of the window rather than of the data.
+        """
+        tree = ET.parse(TEMPLATE)
+        page = self.find(tree, ".//dashboard/pages/page",
+                         lambda element: element.find("name").text == "Cluster")
+        widget = self.find(page, "./widgets/widget",
+                           lambda element: element.find("name") is not None
+                           and element.find("name").text == "Top pending reasons")
+        self.assertEqual(widget.find("type").text, "item")
+        field = self.find(widget, "./fields/field",
+                          lambda element: element.find("name").text == "itemid.0")
+        self.assertEqual(field.find("./value/key").text,
+                         "slurm.jobs.pending.top_reasons")
+
     def test_uses_the_standard_template_group_uuid(self):
         """Templates/Applications already exists in every Zabbix installation."""
         tree = ET.parse(TEMPLATE)

@@ -271,13 +271,14 @@ meaningful.
 
 ## Dashboards
 
-One template dashboard with four pages:
+One template dashboard with six pages:
 
 The slideshow is off by default, so a page stays put while you read it.
 
 1. **Cluster** — node availability, CPU and GPU allocation, running and pending
    jobs as value widgets, then nodes by state, jobs by state, CPU allocation,
-   pending jobs by reason, memory, GPUs and queue wait time.
+   pending jobs by reason, memory, GPUs and queue wait time, and finally the
+   current *top pending reasons* in Slurm's own words.
 2. **Scheduler** — controller and database availability, agent queues, schedule
    queue length and backfill depth, with cycle times, scheduler queues, job
    throughput and queue size in CPUs.
@@ -297,6 +298,14 @@ Template dashboards render in **host** context. Open them through
 and pick the time range with the selector at the top right. The dashboard as
 shown under *Data collection → Templates → … → Dashboards* is the editing view:
 it has no host behind it, so every widget there is empty by design.
+
+Value widgets show the latest value and ignore the time selector; graphs are
+aggregated over whatever range it is set to. A wide range therefore averages a
+burst of pending jobs down to a fraction, and *Jobs pending* reading 12 while
+*Pending jobs by reason* barely leaves the axis is the window, not a gap in the
+data — narrow the range and the bands come back. The *Top pending reasons*
+widget under those graphs sidesteps the question entirely: it is a value
+widget, so it always reads the queue as it stands right now.
 
 The *Partitions* and *Nodes* pages are built from graph prototypes and stay
 empty until discovery has created the graphs, which also means they stay empty
